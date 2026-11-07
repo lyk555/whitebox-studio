@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>白模工坊</title>
+<link rel="stylesheet" href="/vendor/fonts/noto-serif-sc/400.css">
+<link rel="stylesheet" href="/vendor/fonts/noto-serif-sc/500.css">
+<link rel="stylesheet" href="/vendor/fonts/ibm-plex-mono/400.css">
+<link rel="stylesheet" href="/vendor/fonts/ibm-plex-mono/500.css">
+<link rel="stylesheet" href="studio.css">
+</head>
+<body>
+<div id="app"></div>
+<div id="toast" role="status" hidden></div>
+
+<dialog id="settings">
+  <form method="dialog" id="settings-form" autocomplete="off">
+    <span class="mono-label">模型</span>
+    <h2>模型设置</h2>
+    <p class="muted small">拆解故事、画画面、做视频都要用到火山方舟的模型。密钥只保存在这台电脑上。</p>
+    <label class="field"><span>API Key</span><input id="s-key" type="password" autocomplete="new-password" spellcheck="false"></label>
+    <label class="field"><span>接口地址</span><input id="s-base" type="url" required spellcheck="false"></label>
+    <div class="form-row">
+      <label class="field"><span>文本模型</span><input id="s-text" required spellcheck="false"></label>
+      <label class="field"><span>图像模型</span><input id="s-image" required spellcheck="false"></label>
+    </div>
+    <label class="field"><span>视频模型</span><input id="s-video" required spellcheck="false"></label>
+    <p id="s-result" role="status"></p>
+    <div class="dialog-actions">
+      <button type="button" id="s-test">测试连接</button>
+      <span class="spacer"></span>
+      <button type="button" id="s-close" class="quiet">关闭</button>
+      <button type="submit" class="primary" id="s-save">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="confirm">
+  <form method="dialog">
+    <h2 id="confirm-title"></h2>
+    <div id="confirm-body"></div>
+    <div class="dialog-actions">
+      <span class="spacer"></span>
+      <button value="no" class="quiet">取消</button>
+      <button value="yes" class="primary" id="confirm-yes"></button>
+    </div>
+  </form>
+</dialog>
+<script type="module" src="app.js"></script>
+</body>
+</html>

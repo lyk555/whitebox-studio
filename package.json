@@ -1,0 +1,16 @@
+{
+  "name": "whitebox-studio",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Story to playable film: a workflow from a story through cast, scenes and whitebox to generated, playable, watchable scenes.",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test \"tests/*.test.mjs\""
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "^5.1.1",
+    "@fontsource/noto-serif-sc": "^5.3.1",
+    "three": "0.180.0"
+  }
+}
