@@ -588,7 +588,7 @@ function standPeople(scene, { blocks, standing, walkable, shell, spawn, beats, i
       issues.push({ level: 'warning', message: `“${block.label}”旁边站不下人，第 ${entry.by} 步说话的人物不会出现在画面里，只在露脸镜头里出现。`, object: block.name, beat: entry.by })
       continue
     }
-    placed.push({ id: entry.cast, x: spot.x, z: spot.z, mirror: spot.x < (mark?.x ?? block.center[0]), ...(entry.after ? { after: entry.after } : {}), file: `figure_${entry.cast}.png` })
+    placed.push({ id: entry.cast, x: spot.x, z: spot.z, mirror: spot.x < (mark?.x ?? block.center[0]), ...(entry.after ? { after: entry.after } : {}), ...(entry.from ? { from: entry.from } : {}), file: `figure_${entry.cast}.png` })
   }
   return placed
 }

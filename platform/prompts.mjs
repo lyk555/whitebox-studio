@@ -3,9 +3,10 @@
 import { plateSees } from '../runtime/followCamera.js'
 import { OBJECT_COLOURS } from '../runtime/objectColours.js'
 import { pictureBounds } from './detail.mjs'
-import { speechSeconds } from './speech.mjs'
+import { LONGEST_TALKING_SHOT, speechSeconds } from './speech.mjs'
 import { inPicture } from './people.mjs'
 import { ARCHETYPES, personBox, wallsFirstCameraSees } from './stage.mjs'
+import { copiesLines, namedProps, propNamesOf, sentence, withoutLines } from './wording.mjs'
 
 const [PLATE_WIDTH, PLATE_HEIGHT] = [2560, 1440]
 const NO_PEOPLE = '画面中不得出现任何人物、文字、水印或界面。'
@@ -72,12 +73,6 @@ function emptied(shell) {
 }
 const MATTE = '保留的物体必须和图1逐像素相同，位置、大小、轮廓和颜色都不得变化，也不得增加任何内容。绿色是完全均匀的纯绿色（#00FF00），没有渐变、纹理或阴影，并且紧贴物体边缘，物体的腿之间、靠背和扶手之间露出的墙和地板也要涂成绿色。墙和地板之间的踢脚线也要涂成绿色。相机和构图不变。不得出现文字或水印。'
 const PROP = '背景是完全均匀的纯绿色（#00FF00），没有影子和渐变，物体上不得有绿色。图1只用来参考材质和光线的感觉。写实风格。不得出现人物、文字或水印。'
-
-// What the model wrote may or may not end a sentence, and these run on into each other.
-const sentence = text => {
-  const trimmed = String(text ?? '').trim()
-  return !trimmed || /[。！？.!?]$/.test(trimmed) ? trimmed : `${trimmed}。`
-}
 
 const look = (project, scene, shell) => `风格：${sentence(project.style)}这个地方：${sentence(scene.place)}${scene.edges ? `四周：${sentence(scene.edges)}` : ''}氛围：${sentence(scene.mood)}${softLight(shell)}`
 
@@ -225,12 +220,23 @@ const FILM_SOUND = '人物外貌和服装全程不变。声音是写实的同期
 // Only a shot with lines changes what it asks for, so every shot already made stays what it was.
 const TALKING_SOUND = '人物外貌和服装全程不变。声音是写实的同期声：人物用中文普通话说出下面的台词，一字不改，每句只说一遍，一句说完下一句才开始，口型和台词对上；背景是环境声，音量低于人声。除这些台词外没有别的人声，没有旁白，没有音乐。不得出现任何文字：没有字幕、水印，物件上也不得有可辨认的字。'
 const TALKING_FACES = '画面里只有上面这些人，每人只出现一次，背景和远处不得再出现同一个人。说话时看着对方，不看镜头；没轮到说话的人听着，嘴闭上。'
+// Told to look at whoever he is talking to, a man talking alone is given someone: a shoulder at the edge of the picture, in a
+// study the story says is empty (seen on 《雾都码头谜案》). Alone, he talks to himself.
+const TALKING_ALONE = '画面里只有他一个人，他在自言自语，视线落在手里的东西或画面外，不看镜头。画面里不得出现任何别的人，前景和画面边缘也不得有别人的背影、肩膀、手或衣服。'
+// With the others standing in the room he is not talking to himself, and told that he is, he says to nobody what the story has
+// him say to their faces (seen on 《雾都码头谜案》: Holmes tells the man who cornered him that help is coming, and mutters it at
+// his own hands). They still have no portrait in this shot, so they stay out of it.
+const TALKING_PAST_CAMERA = '画面里只拍这一个人。这个地方还有别人，都在画面外：这些话是说给他们听的，视线落在画面外他们所在的方向，不看镜头。画面里不得出现任何别的人，前景和画面边缘也不得有别人的背影、肩膀、手或衣服。'
 const voiceOf = person => (person?.voice ? `（声音：${person.voice}）` : '')
 const linesToSay = (lines, people) => `台词，按顺序说：${lines.map(line => `${line.who}${voiceOf(people.find(person => person.name === line.who))}说：“${line.says}”`).join('；')}。`
 const filmLook = () => `写实电影质感，浅景深，运镜平稳，光线和色调与第一帧一致。场景就是画面里的这个地方，不得出现别的地方、家具或人物。不得出现阳光、光束或窗影。灯光柔和，不要放射状的光线。${FILM_SOUND}`
 // A picture lit like a film already has its light, so a shot keeps what is there and adds nothing.
 const litFilmLook = () => `写实电影质感，浅景深，运镜平稳。光线、光源和色调与第一帧完全一致，不要增加或改变光源。场景就是画面里的这个地方，不得出现别的地方、家具或人物。${FILM_SOUND}`
 const FADES_TO_BLACK = '最后画面慢慢暗下去，直到全黑，所有声音也随之消失。'
+// Told first of all that everything goes dark and silent, and given no longer than the lines take, a shot has to choose between
+// the lines and the dark. So the dark comes after what the shot shows, is said to come after the lines, and has time of its own.
+const FADES_AFTER_LINES = '台词全部说完以后，画面才慢慢暗下去，直到全黑，环境声也随之消失。'
+const FADE_SECONDS = 2
 const FROM_WHOLE_ROOM = '第一帧是这个地方的固定全景，人物很小：镜头从全景平稳推近到动作，拍清楚手和东西。'
 // A close shot has no first frame to hold it. Who is in it and where they look has to be said.
 const ONE_OF_EACH = '画面里只有上面这些人，每人只出现一次，背景和远处不得再出现同一个人。眼睛不看镜头，视线落在画面外或手里的东西上。'
@@ -250,7 +256,8 @@ const withSound = (text, sound) => `${text}${sound ? `声音：${sound}。` : ''
 // Others standing in the pictures a shot is pinned to. Said only when someone is there, so a shot with nobody else stays as it was.
 // Pushed in close, a face the model has no portrait for turns into someone else (seen on 《雾都码头谜案》: the coal heaver aged
 // thirty years), so with others in the picture the camera stays back, where faces are too small to change.
-const KEEPS_WIDE = '第一帧是这个地方的固定全景，人物很小。镜头只缓慢推近一点点，始终是看得到所有人全身的全景，人物一直很小，看不清脸。画面里只有一个主角，不要出现第一人称视角的手。'
+// What the hands do is written for a camera that comes in close, and this one may not: which of the two gives way has to be said.
+const KEEPS_WIDE = '第一帧是这个地方的固定全景，人物很小。镜头只缓慢推近一点点，始终是看得到所有人全身的全景，人物一直很小，看不清脸。画面里只有一个主角，不要出现第一人称视角的手。动作里手上的细节在全景里看不清也没关系，只要看得出主角在做这件事。'
 const standingThere = people => people.map(person => `${person.name}（${person.costume}），站在${person.where}`).join('；')
 const othersIn = (people, where) => people.length ? `${where}里还有${standingThere(people)}。他们一直站在原地，不走开，可以转头看向主角，外貌和服装全程不变。` : ''
 const comeIn = (first, last) => {
@@ -263,7 +270,12 @@ const CLOSE_ON_HANDS = '特写里只拍手和东西，不拍别人的脸。'
 // With several others in the room, a shot free at its end loses track of which small figure is the player, and brings in a second
 // one close to the camera (seen on 《雾都码头谜案》: five people in a warehouse of four). So it is told how many there are, and which.
 const CROWD = 2
-const whoLeads = (lead, count) => lead ? `画面里一共${count}个人。${lead.name}是第一帧里${lead.where}背对镜头、穿${lead.costume}的那一个，就是他走过去做这些动作；镜头前不要再出现另一个人，从头到尾都是这${count}个人。` : ''
+const whoLeads = (lead, count, there = '') => lead ? `画面里一共${count}个人。${lead.name}是第一帧里${lead.where}背对镜头、穿${lead.costume}的那一个，就是他${there ? '' : '走过去'}做这些动作；镜头前不要再出现另一个人，从头到尾都是这${count}个人。` : ''
+// The game takes a step's first frame with the player already at its thing (game.js filmShots), and what a step shows is often
+// written from the walk over to it. Asked to walk to where he stands, a model walks him somewhere else and back, or brings a
+// second one in. Said only of a step written that way, so the others stay as they were.
+const WALKS_OVER = /走到|走向|走近|走去|走过去|走过来|挪到|挪向|迈步|踱/
+const alreadyAt = (who, thing) => `第一帧里${who}已经站在${thing}前，不用再走过去：下面写到走过来的地方都略过，动作从站在这里开始。`
 const BESIDE = 1.3 // Metres past a thing's edge that still reads as standing beside it.
 
 // A shot that shows a face cannot also be pinned to frames: the video model allows one or the other.
@@ -271,7 +283,9 @@ const BESIDE = 1.3 // Metres past a thing's edge that still reads as standing be
 // the portrait, and they meet on a cut, as shots do.
 // With the fixed view, the place a face shot refers to is the painted picture with nobody in it (facePlate), since a
 // model shown a frame with the person in it paints them a second time. null means the shot is somewhere no picture shows.
-function partsOf({ action, face, settle, sound, people, lines = [], landsOnEnd, fixedView = false, closeUp = false, facePlate, fadesOut = false, others = { first: [], last: [] }, lead = null }) {
+// A step can also say what the place sounds like under it (ambience). Its sound is written for the hands, and given to all three
+// shots a door is kicked in three times: so the shots after the first take the place's sound when there is one.
+function partsOf({ action, face, settle, sound, ambience, people, lines = [], landsOnEnd, fixedView = false, closeUp = false, facePlate, fadesOut = false, others = { first: [], last: [] }, lead = null, alone = false, thing = '' }) {
   const pinnedEnd = landsOnEnd ? LANDS_ON_LAST_FRAME : ''
   const lookOf = fixedView ? litFilmLook : filmLook
   const anyone = [...new Set([...others.first, ...others.last])]
@@ -280,21 +294,26 @@ function partsOf({ action, face, settle, sound, people, lines = [], landsOnEnd, 
   const opening = closeUp ? (others.first.length ? KEEPS_WIDE : FROM_WHOLE_ROOM) : ''
   const noFace = anyone.length ? `${people[0].name}${NO_FACE.replace('人物', '')}` : NO_FACE
   const standing = othersIn(others.first, '第一帧') + comeIn(others.first, others.last)
+  const there = thing && WALKS_OVER.test(action) ? alreadyAt(anyone.length ? people[0].name : '人物', thing) : ''
   if (!face) {
-    return [{ duration: 10, landsOnEnd, text: withSound(`电影短片。从第一帧开始。${opening}${action}`, sound) + standing + noFace + (fadesOut ? FADES_TO_BLACK : '') + pinnedEnd + look() }]
+    return [{ duration: 10, landsOnEnd, text: withSound(`电影短片。从第一帧开始。${opening}${there}${action}`, sound) + standing + noFace + (fadesOut ? FADES_TO_BLACK : '') + pinnedEnd + look() }]
   }
+  const air = ambience || sound
+  // The lines are handed over by themselves: what the shot shows does not say them a second time.
+  const shows = withSound(`电影镜头：${copiesLines(face, lines) ? sentence(withoutLines(face, lines)) : face}`, air) + (!fadesOut ? '' : lines.length ? FADES_AFTER_LINES : FADES_TO_BLACK)
+  const fade = fadesOut ? FADE_SECONDS : 0
   const faceShot = fixedView
-    ? { duration: 4, showsFace: true, people, facePlate, text: withSound(`电影镜头：${face}`, sound) + facesLine(people, facePlate !== null) + ONE_OF_EACH + (facePlate === null ? outsideLook(action) : faceLook()) }
-    : { duration: 4, showsFace: true, people, text: withSound(`电影镜头：${face}`, sound) + facesLine(people) + lookOf() }
+    ? { duration: 4 + fade, showsFace: true, people, facePlate, text: shows + facesLine(people, facePlate !== null) + ONE_OF_EACH + (facePlate === null ? outsideLook(action) : faceLook()) }
+    : { duration: 4 + fade, showsFace: true, people, text: shows + facesLine(people) + lookOf() }
+  const heardBy = alone && people.length === 1 ? (others.first.length ? TALKING_PAST_CAMERA : TALKING_ALONE) : TALKING_FACES
   const parts = [
-    { duration: 5, text: withSound(`电影短片，从第一帧开始。${opening}${action}`, sound) + othersIn(others.first, '第一帧') + whoLeads(others.first.length >= CROWD && lead, others.first.length + 1) + noFace + onlyThose(lookOf(), others.first) },
+    { duration: 5, text: withSound(`电影短片，从第一帧开始。${opening}${there}${action}`, sound) + othersIn(others.first, '第一帧') + whoLeads(others.first.length >= CROWD && lead, others.first.length + 1, there) + noFace + onlyThose(lookOf(), others.first) },
     lines.length
-      ? { ...faceShot, duration: speechSeconds(lines), lines, text: linesToSay(lines, people) + faceShot.text.replace(ONE_OF_EACH, TALKING_FACES).replace(FILM_SOUND, TALKING_SOUND) }
+      ? { ...faceShot, duration: Math.min(LONGEST_TALKING_SHOT, speechSeconds(lines) + fade), lines, text: linesToSay(lines, people) + faceShot.text.replace(ONE_OF_EACH, heardBy).replace(FILM_SOUND, TALKING_SOUND) }
       : faceShot,
   ]
-  if (fadesOut) parts.at(-1).text = `${FADES_TO_BLACK}${parts.at(-1).text}`
   if (landsOnEnd) {
-    parts.push({ duration: 4, landsOnEnd: true, opensOnCut: true, text: withSound(`电影短片。从第一帧开始，切到特写：${settle || '手收回来。'}然后切到给定尾帧的构图，人物背对镜头站定。`, sound) + standing + (anyone.length ? CLOSE_ON_HANDS : '') + noFace + pinnedEnd + look() })
+    parts.push({ duration: 4, landsOnEnd: true, opensOnCut: true, text: withSound(`电影短片。从第一帧开始，切到特写：${settle || '手收回来。'}然后切到给定尾帧的构图，人物背对镜头站定。`, air) + standing + (anyone.length ? CLOSE_ON_HANDS : '') + noFace + pinnedEnd + look() })
   }
   return parts
 }
@@ -342,13 +361,26 @@ export function filmClips(project, scene, stage) {
     parts: partsOf({ action: `${scene.film.opening.action}一位人物（${player.costume}）走到尾帧的位置停下，背对镜头。`, sound: scene.film.opening.sound, people: [player], landsOnEnd: true, fixedView, others: othersAt('opening') }),
     hasLast: true,
   }]
+  // With the others standing in the room, a face shot shows only who it names or hears, or who stands there by the end of the
+  // step: a portrait handed over for anyone else puts them in the shot, out of nowhere (seen on 《雾都码头谜案》: the coal heaver
+  // beside Holmes on the pier, where he never was).
+  // Someone coming in during the step is not there yet when the face shot comes, unless it says so: Holmes asks whether Watson
+  // is back, and Watson walks in after.
+  const inFaceShot = beat => {
+    if (!scene.onStage) return beat.faceCast ?? []
+    const there = new Set(othersAt(beat.id).first.map(person => person.name))
+    return (beat.faceCast ?? []).filter(name => there.has(name) || (beat.face ?? '').includes(name) || (beat.lines ?? []).some(line => line.who === name))
+  }
+  // An id is for the code. Written into a shot by a model, it is put back to what the thing is called.
+  const called = propNamesOf(project)
+  const named = text => namedProps(text, called)
   for (const beat of scene.beats) {
     if (!beat.performed || !stage.data.story.beats.some(entry => entry.id === beat.id && entry.clip)) continue
     // The last step of a chapter is where the chapter closes: it runs on to black, with no picture to come back to.
     const closes = Boolean(beat.endsChapter)
     clips.push({
       id: beat.id, title: beat.objective,
-      parts: partsOf({ action: beat.action, face: beat.face, settle: beat.settle, sound: beat.sound, people: peopleFor(beat.faceCast ?? []), lines: beat.lines, landsOnEnd: !closes, fixedView, closeUp: fixedView, facePlate: 'plate_a_closed.png', fadesOut: closes, others: othersAt(beat.id), lead: leadAt(beat.id) }),
+      parts: partsOf({ action: named(beat.action), face: named(beat.face), settle: named(beat.settle), sound: beat.sound, ambience: beat.ambience, people: peopleFor(inFaceShot(beat)), lines: beat.lines, landsOnEnd: !closes, fixedView, closeUp: fixedView, facePlate: 'plate_a_closed.png', fadesOut: closes, others: othersAt(beat.id), lead: leadAt(beat.id), alone: Boolean(scene.onStage), thing: beat.objectName }),
       hasLast: !closes,
     })
   }

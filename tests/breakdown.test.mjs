@@ -38,6 +38,20 @@ test('an answer that never checks out is an error that says why', async () => {
   await assert.rejects(breakdownCast({ ...quiet, project: { story: '有个故事' }, provider }), error => error instanceof FatalError && error.message.includes('cast 是空的'))
 })
 
+test('a name that gives the story away goes back, since the captions show it before the turn', async () => {
+  const inspector = { ...person, role: 'supporting' }
+  const answer = name => JSON.stringify({ title: 'T', style: 'S', cast: [person, { ...inspector, name }] })
+  const provider = scripted(answer('受贿的警督'), answer('码头的警督'))
+  const { cast } = await breakdownCast({ ...quiet, project: { story: '有个故事', flow: 'chapters', truth: '警督收了钱', chapters: [] }, provider })
+  assert.equal(cast[1].name, '码头的警督')
+  assert.ok(provider.asked[0].includes('不能带出真相'))
+  assert.ok(provider.asked[1].includes('把真相写在了名字里'))
+  // A story read scene by scene has no truth kept from its audience, and is asked what it always was.
+  const plain = scripted(answer('受贿的警督'))
+  assert.equal((await breakdownCast({ ...quiet, project: { story: '有个故事' }, provider: plain })).cast[1].name, '受贿的警督')
+  assert.ok(!plain.asked[0].includes('不能带出真相'))
+})
+
 test('a story with nothing in it is refused before any call', async () => {
   const provider = scripted('{}')
   await assert.rejects(breakdownCast({ ...quiet, project: { story: '  ' }, provider }), /还没有故事/)

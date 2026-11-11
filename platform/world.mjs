@@ -63,7 +63,7 @@ export function settleWorld(project) {
     scene.props = [...owner].filter(([id, where]) => where === scene.id && pool.has(id)).map(([id]) => pool.get(id))
     scene.carried = [...owner].filter(([id, where]) => where !== scene.id && pool.has(id)).map(([id, where]) => ({ ...pool.get(id), from: where }))
     // Who stands in the room follows from its steps, so it is worked out again whenever they may have changed.
-    if (project.othersStand) scene.onStage = onStageFrom(project.cast, scene)
+    if (project.othersStand) scene.onStage = onStageFrom(project.cast, scene, chaptersOf(project).flatMap(chapter => chapter.anchors))
   }
   return project
 }

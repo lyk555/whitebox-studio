@@ -5,7 +5,7 @@ import test from 'node:test'
 import { arrive, completeStep, dueSteps, exitIsOpen, newProgress, objectiveIn, pathTo, progressBefore, stepKey, walkThrough } from '../runtime/journey.js'
 import { closeStage, MOST_WAYS, normalizeStage, shellFrom } from '../runtime/shell.js'
 import { applyEdits } from '../platform/agent.mjs'
-import { checkClerkAnswer, checkWorldAnswer, dryOutline, dryWorld, filmingProblems, parseOutline, parseScript, placeSteps, reachableAt } from '../platform/authoring.mjs'
+import { checkClerkAnswer, checkWorldAnswer, dryOutline, dryWorld, faultsBySection, filmingProblems, parseOutline, parseScript, placeSteps, reachableAt, sectionShape } from '../platform/authoring.mjs'
 import { fallbackLayout, roomRules } from '../platform/breakdown.mjs'
 import { buildGraph, stageOf } from '../platform/graph.mjs'
 import { filmClips, platePrompts } from '../platform/prompts.mjs'
@@ -405,6 +405,51 @@ test('a filing that cannot be filmed goes back with the reason', () => {
   assert.throws(() => checkClerkAnswer({ steps: [clerkStep({ gives: ['key'] })] }, clerkContext(quiet)), /不在 props 里/)
   const talking = [{ place: '书房', doing: '走过去', during: '', after: '', lines: [{ who: '老周', says: '嗯' }] }]
   assert.throws(() => checkClerkAnswer({ steps: [clerkStep()] }, clerkContext(talking)), /要写 face/)
+})
+
+test('a step is tied to the thing its place already has, however the script puts it', () => {
+  const project = { cast: CAST, scenes: [{ id: 's1', title: '货栈', beats: [{ id: 'b1', objectName: '废弃木箱堆' }] }] }
+  const steps = ['敲箱子', '看帆布', '再看帆布'].map(doing => ({ place: '货栈', doing, during: '', after: '', lines: [] }))
+  const { beats } = checkClerkAnswer({ steps: [clerkStep({ object: '门洞旁的废弃木箱堆' }), clerkStep({ object: '旧帆布堆' }), clerkStep({ object: '角落的旧帆布堆' })] }, { project, steps, held: new Set(), knownProps: [] })
+  assert.deepEqual(beats.map(beat => beat.objectName), ['废弃木箱堆', '旧帆布堆', '旧帆布堆'])
+})
+
+test('what a shot is made from names a prop, and does not say the lines a second time', () => {
+  const project = { cast: CAST, scenes: [{ id: 's1', title: '货栈', beats: [], props: [{ id: 'old_pipe', name: '旧烟斗', look: '木' }] }] }
+  const steps = [{ place: '货栈', doing: '看箱子', during: '', after: '', lines: [{ who: '林默', says: '他早就收拾好了要走。' }] }]
+  const answer = { steps: [clerkStep({ action: '拿着old_pipe的手敲了敲箱面。', face: '林默站在箱子旁，开口说道：“他早就收拾好了要走。”', settle: 'old_pipe和new_key并排放着。', gives: ['new_key'] })], props: [{ id: 'new_key', name: '新钥匙', look: '铜' }] }
+  const { beats } = checkClerkAnswer(answer, { project, steps, held: new Set(['old_pipe']), knownProps: ['old_pipe'] })
+  assert.equal(beats[0].action, '拿着旧烟斗的手敲了敲箱面。')
+  assert.equal(beats[0].face, '林默站在箱子旁，开口说道。')
+  assert.equal(beats[0].settle, '旧烟斗和新钥匙并排放着。')
+  assert.deepEqual(beats[0].gives, ['new_key'])
+})
+
+test('each piece of a shot is closed where it is written down, and the place can have a sound of its own', () => {
+  const project = { cast: CAST, scenes: [{ id: 's1', title: '货栈', beats: [] }] }
+  const steps = [{ place: '货栈', doing: '看箱子', during: '', after: '', lines: [] }]
+  const filed = step => checkClerkAnswer({ steps: [clerkStep(step)] }, { project, steps, held: new Set(), knownProps: [] }).beats[0]
+  const beat = filed({ action: '手推开箱盖', face: '老周抬起头', settle: '箱盖落回去', sound: '箱盖的吱呀声，远处的汽笛声。', ambience: '远处的汽笛声。' })
+  assert.equal(beat.action, '手推开箱盖。')
+  assert.equal(beat.face, '老周抬起头。')
+  assert.equal(beat.settle, '箱盖落回去。')
+  assert.equal(beat.sound, '箱盖的吱呀声，远处的汽笛声', 'the prompt closes the list itself')
+  assert.equal(beat.ambience, '远处的汽笛声')
+  assert.equal('ambience' in filed({ action: '手推开箱盖', ambience: '远处的汽笛声' }), false, 'with one shot there is nothing for it to lie under')
+})
+
+test('a section is counted before it is judged, and its faults are kept by the section they are put right in', () => {
+  assert.equal(sectionShape(SCRIPT, '林默', ['林默', '老周']), '这一段有 2 步，其中 1 步没有别人开口。主角说了 1 句，别的人物一共说了 1 句。')
+  const anchors = [{ id: 'a1', script: '【书房】' }, { id: 'a2', script: '【书房】' }, { id: 'a3' }]
+  const found = faultsBySection({ faults: [{ section: 2, what: '“我提前叫的人到了”和第 1 段的“你敢一个人来”对不上', fix: '他是一个人来的' }, { section: 2, what: '画还在老周手里' }, { section: 3, what: '还没写的段' }, { section: 9, what: '没有这一段' }, { section: 1 }] }, anchors)
+  assert.deepEqual([...found.keys()], ['a2'])
+  assert.deepEqual(found.get('a2'), ['“我提前叫的人到了”和第 1 段的“你敢一个人来”对不上 要改成：他是一个人来的', '画还在老周手里'])
+  assert.equal(faultsBySection(null, anchors).size, 0)
+})
+
+test('what is said after a place\'s opening in its shot does not run on from it', () => {
+  const { scenes } = checkWorldAnswer(worldAnswer(), twoAnchors())
+  assert.equal(scenes[0].film.opening.action, '后拉。')
 })
 
 test('steps go into the places they happen in, in the anchor\'s order', () => {

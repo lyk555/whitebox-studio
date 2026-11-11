@@ -279,6 +279,7 @@ function sceneInspector({ scene, beat, exit }, close) {
         }, { multiline: true, rows: 3, placeholder: '谁：说什么，一行一句。写在露脸镜头里才会说出来', hint: '一个镜头最多 12 秒，大约 45 个字。' }),
         field('收尾特写', beat.settle, bind(beat, 'settle'), { multiline: true, rows: 2, placeholder: '可以不写' }),
         field('声音', beat.sound, bind(beat, 'sound'), { multiline: true, rows: 2 }),
+        field('露脸和特写下面的环境声', beat.ambience, bind(beat, 'ambience'), { multiline: true, rows: 2, placeholder: '可以不写，不写就三个镜头都用上面的声音' }),
       ] : null))
   }
   if (exit) {

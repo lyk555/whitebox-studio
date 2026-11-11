@@ -261,6 +261,55 @@ test('the graph pays for the shot as long as it really is', () => {
   assert.equal(shot.seconds, speechSeconds(lines))
 })
 
+const partsOf = beat => clipsOf(sceneWith(beat)).find(clip => clip.id === 'b1').parts
+
+test('a step written from the walk over is told the player already stands there, and no other step is', () => {
+  // The game takes the first frame with the player at the thing. Asked to walk to where he stands, a model walks him off and back.
+  const [walked] = partsOf({ action: '背影缓步走到吧台旁，手按吧台。' })
+  assert.match(walked.text, /第一帧里人物已经站在吧台前，不用再走过去/)
+  assert.ok(walked.text.indexOf('已经站在吧台前') < walked.text.indexOf('背影缓步走到'), 'said before the walk it is about')
+  assert.doesNotMatch(partsOf({})[0].text, /已经站在/)
+  const talking = partsOf({ action: '背影缓步走到吧台旁，手按吧台。', face: '老板抬头。', faceCast: ['老板'] })
+  assert.match(talking[0].text, /已经站在吧台前/)
+  assert.doesNotMatch(talking[2].text, /已经站在/, 'the close shot after the face has no walk in it')
+})
+
+test('a chapter that closes on someone speaking goes dark after the lines, and has the time to', () => {
+  // Seen on 《雾都码头谜案》: "at the end everything goes dark and silent" was the first thing the shot was told, before the lines.
+  const closing = partsOf({ face: '老板抬头。', faceCast: ['老板'], lines, endsChapter: true })
+  const face = closing.at(-1)
+  assert.equal(face.showsFace, true, 'with no picture to come back to, the face is the last shot')
+  assert.doesNotMatch(face.text, /^最后/)
+  assert.ok(face.text.indexOf('台词全部说完以后，画面才慢慢暗下去') > face.text.indexOf('电影镜头：老板抬头。'))
+  assert.equal(face.duration, speechSeconds(lines) + 2)
+  const long = partsOf({ face: '老板抬头。', faceCast: ['老板'], lines: [{ who: '老板', says: '话'.repeat(50) }], endsChapter: true }).at(-1)
+  assert.equal(long.duration, 12, 'never longer than the model can make')
+  const silent = partsOf({ face: '老板抬头。', faceCast: ['老板'], endsChapter: true }).at(-1)
+  assert.match(silent.text, /电影镜头：老板抬头。最后画面慢慢暗下去/)
+  assert.equal(silent.duration, 6)
+})
+
+test('what the place sounds like lies under the shots after the first, so a door is not kicked in three times', () => {
+  const step = { face: '老板抬头。', faceCast: ['老板'], sound: '门被踹开的闷响，炉火声' }
+  const [hands, face, close] = partsOf({ ...step, ambience: '炉火声' })
+  assert.match(hands.text, /声音：门被踹开的闷响，炉火声。/)
+  for (const part of [face, close]) {
+    assert.match(part.text, /声音：炉火声。/)
+    assert.doesNotMatch(part.text, /踹开/)
+  }
+  assert.ok(partsOf(step).every(part => part.text.includes('声音：门被踹开的闷响，炉火声。')), 'a step that says nothing of the place is asked for what it always was')
+})
+
+test('what a model left in a shot is put right before a picture is made from it', () => {
+  const scene = sceneWith({ action: '指尖夹着old_pipe敲了敲吧台。', face: '福尔摩斯站在吧台旁，开口说道：“那晚你在哪？”', settle: 'old_pipe放回吧台。', faceCast: ['老板'], lines })
+  const held = { ...scene, props: [{ id: 'old_pipe', name: '旧烟斗', look: '木' }] }
+  const [hands, face, close] = clipsOf(held).find(clip => clip.id === 'b1').parts
+  assert.match(hands.text, /指尖夹着旧烟斗敲了敲吧台/)
+  assert.match(close.text, /旧烟斗放回吧台/)
+  assert.match(face.text, /电影镜头：福尔摩斯站在吧台旁，开口说道。/)
+  assert.equal(face.text.split('那晚你在哪？').length, 2, 'the line is asked for once')
+})
+
 test('the game has the lines on the clock, and the film has them as subtitles', () => {
   const scene = sceneWith({ face: '老板抬头。', faceCast: ['老板'], lines })
   const game = stageOf(scene).data.story.beats[0].speech

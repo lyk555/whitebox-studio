@@ -141,7 +141,17 @@ export async function breakdownPlot({ project, provider, signal, log, progress }
 // ---------------------------------------------------------------- cast
 const CAST_SYSTEM = `你是影视项目的前期统筹，把一段故事拆成人物表。${JSON_ONLY}`
 
-function castUser(story) {
+// A name is what the captions put in front of a line, so one that says what the story is hiding gives it away before the
+// turn comes. Seen on 《雾都码头谜案》: the inspector the audience was meant to trust was called “受贿苏格兰场警督”.
+const GIVES_AWAY = /受贿|贪污|真凶|凶手|内鬼|叛徒|卧底|幕后|黑手|共犯|同谋|冒牌|假冒|伪装/
+
+// A story in chapters has a truth the audience is not shown, and its people are written from this list alone.
+const WORLD_CAST_RULES = `
+- name 是字幕上写在台词前面的称呼，观众一开始就看得到。只写他是谁：名字，或者“码头的警督”这样的身份。不能带出真相，也不能带评价：不写受贿、真凶、内鬼、幕后这类词。
+- 章节和锚点里要在画面上做事或说话的每个人都要列出来，只出现一次的也要。没有名字的给一个称呼（如“便衣警察”），一个称呼就是一个人，这部戏拍不出一群人。
+- personality 除了性格，再写这个故事里他想要什么、瞒着什么，编剧只靠这一句来写他。`
+
+function castUser(story, world = false) {
   return `故事：
 ${story}
 
@@ -165,7 +175,7 @@ ${story}
 要求：
 - 故事里真正露面或说话的人物都要列出来，一个不漏。主角只有一个，玩家操作的就是主角。
 - 都是虚构角色，不得写成真实存在的名人。
-- look 和 costume 要具体到能据此画出同一个人。`
+- look 和 costume 要具体到能据此画出同一个人。${world ? WORLD_CAST_RULES : ''}`
 }
 
 // Everyone the story needs on screen has to be someone with a face to draw.
@@ -711,12 +721,16 @@ export async function breakdownCast({ project, provider, signal, log, progress }
   if (!provider.text) return dryCast(project.story)
   const told = isWorld(project) ? `${project.story}\n\n真相（观众看不到）：${project.truth}\n\n章节和锚点：\n${outlineText(project)}` : project.story
   return askChecked({
-    provider, system: CAST_SYSTEM, user: castUser(told), signal, log, progress,
+    provider, system: CAST_SYSTEM, user: castUser(told, isWorld(project)), signal, log, progress,
     check: answer => {
       const found = checkCast(answer)
       castCovers(found.cast, project.plot)
       // A name is what a script writes in front of a line. A note in brackets would have to be copied exactly, every time.
-      if (isWorld(project)) for (const person of found.cast) person.name = plainName(person.name)
+      if (isWorld(project)) {
+        for (const person of found.cast) person.name = plainName(person.name)
+        const telling = found.cast.filter(person => GIVES_AWAY.test(person.name)).map(person => person.name)
+        if (telling.length) throw new Error(`人物名“${telling.join('”“')}”把真相写在了名字里，观众在字幕上一眼就看到了。name 只写他是谁，不写他做了什么。`)
+      }
       return found
     },
   })

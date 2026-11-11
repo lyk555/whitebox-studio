@@ -49,7 +49,7 @@ const SCENE_KEYS = { opening_line: 'openingLine', ending_line: 'endingLine' }
 const EXIT_TEXT = { name: '出口', beyond: '出口外的样子', objective: '出口的目标文字', prompt: '出口的按键提示', too_early: '出口没到时候的提示', during: '出口的旁白', last_objective: '出口打开后的目标' }
 const EXIT_KEYS = { too_early: 'tooEarly', last_objective: 'lastObjective' }
 const FILM_TEXT = { opening: '开场视频', door: '出口视频', ending: '结尾视频' }
-const BEAT_TEXT = { objective: '目标', prompt: '按键提示', too_early: '没到时候的提示', during: '进行时的旁白', after: '完成后的旁白', action: '视频内容', face: '露脸镜头', settle: '露脸后的特写', sound: '声音' }
+const BEAT_TEXT = { objective: '目标', prompt: '按键提示', too_early: '没到时候的提示', during: '进行时的旁白', after: '完成后的旁白', action: '视频内容', face: '露脸镜头', settle: '露脸后的特写', sound: '声音', ambience: '露脸和特写下面的环境声' }
 const BEAT_KEYS = { too_early: 'tooEarly' }
 const CAST_TEXT = { age: '年龄', look: '外貌', costume: '服装', personality: '性格', voice: '声音' }
 
@@ -745,7 +745,7 @@ const sayScene = scene => ({
   edges: scene.edges, place: scene.place, mood: scene.mood, opening_line: scene.openingLine, ending_line: scene.endingLine,
   props: scene.props, ...(scene.exits ? {} : { 手里已有的道具: (scene.carried ?? []).map(prop => prop.id) }),
   ...(scene.exits ? { exits: scene.exits.map(exit => ({ to: exit.to, name: exit.name, kind: exit.kind, at: exit.at, beyond: exit.beyond, opens_after: exit.opensAfter, locked: exit.locked })) } : {}),
-  beats: scene.beats.map(beat => ({ id: beat.id, objective: beat.objective, object: beat.objectName, prompt: beat.prompt, too_early: beat.tooEarly, during: beat.during, after: beat.after, gives: propIds(beat.gives), takes: propIds(beat.takes), action: beat.action, face: beat.face, face_cast: beat.faceCast, arrives: beat.arrives ?? [], lines: beat.lines ?? [], settle: beat.settle, sound: beat.sound })),
+  beats: scene.beats.map(beat => ({ id: beat.id, objective: beat.objective, object: beat.objectName, prompt: beat.prompt, too_early: beat.tooEarly, during: beat.during, after: beat.after, gives: propIds(beat.gives), takes: propIds(beat.takes), action: beat.action, face: beat.face, face_cast: beat.faceCast, arrives: beat.arrives ?? [], lines: beat.lines ?? [], settle: beat.settle, sound: beat.sound, ...(beat.ambience ? { ambience: beat.ambience } : {}) })),
   ...(scene.exit ? { exit: { name: scene.exit.name, beyond: scene.exit.beyond, objective: scene.exit.objective, prompt: scene.exit.prompt, too_early: scene.exit.tooEarly, during: scene.exit.during, last_objective: scene.exit.lastObjective } } : {}),
   film: scene.film.ending ? (({ faceCast, ...ending }) => ({ ...scene.film, ending: { ...ending, face_cast: faceCast ?? [] } }))(scene.film.ending) : scene.film,
   objects: (scene.objects ?? []).map(object => ({ name: object.name, look: object.look, ...(object.on ? { on: scene.objects.find(other => other.id === object.on)?.name } : { x: object.x, z: object.z }), size: shapeOf(object)?.size })),
@@ -796,7 +796,7 @@ ${world ? WORLD_RULES : STORY_RULES}
 修改的代价，导演会看到，能不花钱就不花钱：
 - 旁白、目标文字、按键提示这些屏幕上的字：不花钱，马上生效。
 - 一个步骤的 action、face、lines、settle、sound：重拍这一段视频。要人物开口说话，就写 lines；没有 face 的步骤要同时写 face。
-${project.othersStand ? '- 露脸镜头里的配角从这个地方一开始就站在这一步的东西旁边，游戏里和不露脸的镜头里都看得到他站着；这一步才走进来的人写进 arrives。他们不说话、不做动作，要谁开口或做事，写进 face、face_cast 和 lines。改谁露面、谁进来，这个地方的不露脸镜头都要重拍。' : '- 不露脸的 action 镜头拍不到别的人物，那段视频不允许出现其他人。要谁露面或说话，只能写进 face、face_cast 和 lines。'}
+${project.othersStand ? '- 露脸镜头里的配角从这个地方一开始就站在这一步的东西旁边，游戏里和不露脸的镜头里都看得到他站着；这一步才出现的人（闯进来、躲着的现身、出门的回来）写进 arrives，可以写在他露脸之前的那一步。他们不说话、不做动作，要谁开口或做事，写进 face、face_cast 和 lines。改谁露面、谁进来，这个地方的不露脸镜头都要重拍。' : '- 不露脸的 action 镜头拍不到别的人物，那段视频不允许出现其他人。要谁露面或说话，只能写进 face、face_cast 和 lines。'}
 - 场景的 place、mood、edges，物件的样子，白模的摆放：重画这一场的布景，这一场的视频全部重拍。
 - 主角的 look 或 costume：重画定妆照和走路，全片的视频重拍，最贵。配角的只重画定妆照和露脸镜头。
 - 美术风格 style：全片重做。只有导演明确要求换风格时才改。

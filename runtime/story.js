@@ -22,9 +22,11 @@ export const LAST_SHOT = { ...STORY.lastShot, during: STORY.ending }
 export const JOURNEY = STORY.journey ?? null
 export const EXITS = STORY.exits ?? []
 export const SCENE_ID = STORY.sceneId ?? null
-// The others standing in this place: where, and after which step they are there (none says from the start). They stay.
+// The others standing in this place: where, and from when. from: once that step here has been reached (due or done), as
+// a place come back to later in the story may have someone there only the second time. after: once that step is done, as
+// whoever comes in during it. Neither: from the start. Once there, they stay. Kept the same as platform/people.mjs.
 export const PEOPLE = SCENE.people ?? []
-export const peopleThere = isDone => PEOPLE.filter(person => !person.after || isDone(person.after))
+export const peopleThere = (isReached, isDone) => PEOPLE.filter(person => (!person.from || isReached(person.from)) && (!person.after || isDone(person.after)))
 
 // Where the player has got to comes from outside: this page only ever knows one place, and the story goes on elsewhere.
 function storyOnTheMap(started) {
@@ -38,6 +40,7 @@ function storyOnTheMap(started) {
     get progress() { return progress },
     get finished() { return storyFinished(JOURNEY, progress) },
     isDone: id => progress.done.includes(stepKey(SCENE_ID, id)),
+    isReached: id => progress.done.includes(stepKey(SCENE_ID, id)) || dueSteps(JOURNEY, progress).some(step => step.scene === SCENE_ID && step.beat === id),
     arrived() { progress = arrive(progress, SCENE_ID) },
     // Something the story wants now comes first, then a way that is open, then whatever is not ready yet.
     nearby(x, z) {
@@ -74,6 +77,7 @@ export function createStory(progress = null) {
     // A stage prop lies out until the first beat picks it up.
     get propOnStage() { return reached === 0 },
     isDone: id => BEATS.findIndex(beat => beat.id === id) < reached && BEATS.some(beat => beat.id === id),
+    isReached: id => BEATS.some(beat => beat.id === id) && BEATS.findIndex(beat => beat.id === id) <= reached,
     // What the player could act on from here. The beat that is due wins over one that is not.
     nearby(x, z) {
       const inReach = BEATS

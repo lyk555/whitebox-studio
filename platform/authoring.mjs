@@ -11,8 +11,10 @@ import { askChecked, NOT_A_THING } from './breakdown.mjs'
 import { config, ROOT } from './config.mjs'
 import { FatalError } from './engine.mjs'
 import { linesProblem } from './speech.mjs'
+import { kindOf } from './layers.mjs'
 import { arrivalsIn } from './people.mjs'
 import { readProject, writeProject } from './store.mjs'
+import { namedProps, propNamesOf, sentence as ended, unended, withoutLines } from './wording.mjs'
 import { anchorsOf, anchorWords, chaptersOf, heldBefore, mapText, outlineText, seenBefore, settleWorld, worldProblems } from './world.mjs'
 
 const NL = '\n'
@@ -22,7 +24,14 @@ const SECTION_TRIES = 3
 const LOST_MESSAGES = 8 // Steps of one writer's conversation before it is told to stop thinking and hand in.
 const craft = () => readFileSync(join(ROOT, 'platform', 'craft.md'), 'utf8').replace(/## 钱[\s\S]*$/, '').trim()
 
-const FORM = `这部戏是这样看的：玩家操作主角，在一个个地方之间走动，走到一件件立在地上的大东西前（书桌、炉子、木箱，不是墙和门，也不是桌上的小东西），每走到一件就触发一小段电影镜头，看完再走向下一件。一个地方一屏，从出口走到相连的地方，也可以走回去。玩完也能连成一部片子。别的人物不走动：谁在哪一步露面说话，就从这个地方一开始站在那件东西旁边，玩家一进来就看得到他；也可以是那一步才走进来的。一个镜头里除主角外最多两个人，一个镜头说的话一共不超过 46 个字。观众只能靠旁白和台词知道事情，字要写在画面里给人看的镜头拍不了。`
+const FORM = `这部戏是这样看的：玩家操作主角，在一个个地方之间走动，走到一件件立在地上的大东西前（书桌、炉子、木箱，不是墙和门，也不是桌上的小东西），每走到一件就触发一小段电影镜头，看完再走向下一件。一个地方一屏，从出口走到相连的地方，也可以走回去。玩完也能连成一部片子。别的人物不走动：谁在哪一步露面说话，就从这个地方一开始站在那件东西旁边，玩家一进来就看得到他；也可以是那一步才走进来的。一个镜头里除主角外最多两个人，一个镜头说的话一共不超过 46 个字。观众只能靠旁白和台词知道事情，字要写在画面里给人看的镜头拍不了。
+
+拍得出来的只有这些。写了拍不出来的事，观众只在旁白里听到一句，画面上什么都没发生：
+- 画面里只能有人物表里的人，每人都有名字、定了长相。没有名字的便衣、手下、路人、围观的人都拍不出来，也没有一群人的场面。需要谁来做一件事，他就得是故事里一个有名字的人物。
+- 一个人在一个地方露面之后，就一直站在那里，这个地方后面的每个镜头里都有他。他不会离开、被带走、倒下或再躲起来。后面的事需要他不在，就放到别的地方去演。
+- 别的人物在全景里都是站着的。坐着、蹲着、被人按住，只在他露面说话的那个近景里看得到，镜头一拉开他还是站着。
+- 主角以外的人做的事（闯进来、拔枪、递东西），只有在他露面的那个近景里才看得到，一个近景十秒上下，装不下一场打斗。
+- 主角事先做的安排、别人在别处做的事，观众没亲眼看到就等于没发生，不能到了关头才用一句旁白补上。`
 const WRITE_WELL = `## 这种短片最容易写坏的地方
 - 整段都是主角一个人翻东西，旁白在解释。观众是来看人和人的。能让人当面说出来、吵出来、瞒出来的，就不要写成主角自己发现。人物当面的台词要占这一段的大头，你来我往好几个回合，一个镜头说不完就分到下一步。主角也不要对着空气说话。
 - 旁白替观众想完了。“他是来探口风的”是替观众下结论；“他走的时候，眼睛一直落在我手边那张纸上”才让观众自己去想。
@@ -74,6 +83,8 @@ const outlineWriter = () => `你是编剧，现在还不写剧本，先定这个
 
 玩家可以在地方之间来回走，所以同一章里的锚点往往不必分先后，比如先去问谁、先去哪里都行，这时玩家才真正有得选。不分先后的锚点最好发生在不同的地方，玩家选的就是先去哪。它们不能依赖彼此的内容。一章的最后一个锚点总是最后发生。
 
+把锚点连起来读一遍再交：一个锚点的“之前以为”，必须是观众看完前面那些锚点后真的还相信的事，前面已经推翻的，后面不能再当成他以为的。主角一个人对着一件东西得出结论的锚点要少，一章里至少有一个锚点发生在主角和另一个人当面之间。
+
 你最先想到的点子别人也想得到，往后再想一步，可以先让几个编剧各想各的（工具 ask_writers），他们看不到你的东西，问题里要写清楚他们需要知道的。
 
 ${FORM}
@@ -93,6 +104,8 @@ ${craft()}
 const OUTLINE_JUDGE = `你是制片人。这是一个故事还没写成剧本时的真相、章节和转折。开拍很贵，多数点子都平庸。你和作者不熟，不用客气。
 
 问自己：这些转折观众猜得到吗？揭开时是否意外又服气？有没有一个时刻观众看完会跟别人说起？主角是靠自己赢的吗？分量够不够一个完整的故事？看完一章还想看下一章吗？
+
+再把转折连起来读：前一个转折之后观众相信的，和后一个转折说他“之前以为”的，对得上吗？对不上就是不值得写。有几个转折只是主角一个人看一件东西、自己说出结论？这样的占了多数，也不值得写。有没有哪个场面要靠没有名字的一群人（警察、手下、围观的人）才演得出来？这部戏拍不了群演。
 
 导演写定的人物、情节和结局作者不能改，不要因为这些退回。
 
@@ -231,7 +244,8 @@ ${FORM}
 - 一个地方最多 ${MOST_WAYS} 个出口，都在远端边界上。at 是出口从左到右的位置，0.12 到 0.88，同一个地方的两个出口至少隔 0.24。两个地方之间只有一条路。
 - 出口要符合这个地方：有门的 kind 写 door；门洞、小路、楼梯、巷口这种 kind 写 opening。
 - 画面和视频里不能有文字，place 不要写海报、招牌、书法这类带字的东西。place 要写清墙面和地面的颜色与材质。
-- 第一次走进一个地方时会放一段开场视频，以后回来就不放了。玩家先去哪里可能不一样，所以开场旁白和开场视频只写这个地方本身，不提前面发生过的事。
+- 第一次走进一个地方时会放一段开场视频，以后回来就不放了。玩家先去哪里可能不一样，所以开场旁白和开场视频只写这个地方本身，不提前面发生过的事。谁站在这里要到写戏时才定，所以开场里不写别的人物，也不写人声。
+- 走过一个出口是一次切换：画面黑下去，出现地名，人已经到了那边，所以隔着半个城的两个地方也可以直接相连。但出口画的是这一边看得到的东西：两个地方离得远，它就是通往那边的路（街门、巷口、码头的台阶），不是一扇推开就是另一个房间的门。
 
 输出：
 {
@@ -247,15 +261,15 @@ ${FORM}
       "place": "这个地方是什么样，写四周、地面和整体环境，一两句",
       "mood": "光线和色调，一两句，像电影布光：主光从哪来，照亮哪里，哪里沉入暗部，冷暖怎么对比。只写看得见的光，不写声音",
       "opening_line": "第一次走进这里时屏幕上的一句旁白，第一人称，短，具体",
-      "opening_action": "开场视频：从这里一件有代表性的东西特写开始，镜头后拉，主角走进来停下背对镜头。全程不露脸",
-      "opening_sound": "这段视频的环境声和动作声"
+      "opening_action": "开场视频，写成完整的句子：镜头从这里一件大东西的特写拉开，主角走进来停下，背对镜头，全程不露脸。特写拍哪一件东西到写戏之后才定，所以不要写出具体的物件，写这里的光线、空气和主角怎么走进来。称“主角”，不用“我”",
+      "opening_sound": "这段视频的环境声和主角的动作声，不写人声"
     }
   ],
   "links": [
     {
       "a": 地点序号, "b": 地点序号,
-      "a_exit": { "name": "从 a 这边看这条路是什么，如：铁门、石拱门洞、向下的楼梯", "kind": "door 或 opening", "at": 0.3, "beyond": "走过去之后看到什么样，一句" },
-      "b_exit": { "name": "从 b 这边看这条路是什么", "kind": "door 或 opening", "at": 0.7, "beyond": "一句" },
+      "a_exit": { "name": "从 a 这边看这条路是什么，如：铁门、石拱门洞、向下的楼梯", "kind": "door 或 opening", "at": 0.3, "beyond": "站在 a 这边，透过这个出口看得到的一小片：门后的走廊、巷子、台阶、雾里的路。不是 b 里面的样子，一句" },
+      "b_exit": { "name": "从 b 这边看这条路是什么", "kind": "door 或 opening", "at": 0.7, "beyond": "站在 b 这边透过它看得到的一小片，不是 a 里面的样子，一句" },
       "opens_after": "这条路等哪个锚点之后才通，写锚点编号如 a3；一开始就通就留空",
       "locked": "路还没通时玩家走过去看到的一句话，第一人称；一开始就通就留空",
       "one_way": false
@@ -281,7 +295,8 @@ export function checkWorldAnswer(answer, project) {
     return {
       id: `s${index + 1}`, title: clean(place.title), paint: 'relaxed', stage: closeStage({ kind: place.kind, width: place.width, depth: place.depth, exit: 'opening' }),
       edges: clean(place.edges), place: clean(place.place), mood: clean(place.mood), openingLine: clean(place.opening_line), exits: [], props: [], carried: [], beats: [], objects: [],
-      film: { opening: { action: clean(place.opening_action), sound: clean(place.opening_sound) } },
+      // What is said after it in the shot's prompt would otherwise run on from it as one sentence.
+      film: { opening: { action: ended(place.opening_action), sound: clean(place.opening_sound) } },
     }
   })
   const titles = new Set()
@@ -351,18 +366,28 @@ ${WRITE_WELL}
 
 先规划，再写。一个转折很少靠走到一件东西前就能发生：观众得先被带着相信一件事、在意一个人，那个转折才推得翻他。所以规划这一段里的每一小步：在地点图的哪些地方，一个地方有哪些大东西，主角依次走到哪几件前，每一件上观众看到什么、多相信了什么或多怀疑了什么，谁在，他想要什么、瞒着什么，主角在这里主动做了什么。这一段该多长就多长，给够铺垫，不要匆匆带过：只走到一件东西前、说一句话，转折是发生不了的。
 
+规划里还要对一遍账，前后对不上的戏观众一眼就看得出来：
+- 这时谁在哪个地方，谁手里拿着什么。前面的剧本里东西在谁手里，这一段没演它换手，它就还在那个人手里。
+- 你要用到的每一件事，观众是不是在前面的剧本或这一段里亲眼看到过。没看到过的（主角事先叫了人、别人在别处做了什么），要么在这一段里演出来，要么不用。
+- 同一个地方的东西要认得出来：前面的剧本里出现过的东西，再用就叫同一个名字。一个地方不要有好几件一样的东西（三堆木箱、两张桌子），人躲在哪、东西放在哪，前后是同一件。
+- 这一段发生的事，要和它所在的地方对得上。
+
 输出两部分，中间单独一行写 ===：
 上面是你的规划，观众看不到。
 下面是这一段的剧本，观众看到的就是它，格式（方括号里直接写地点图上的地点名，一字不差）：
 【地点名】
 旁白：一句主角心里的话或看到的东西
-主角去做：主角走到某件东西前做的事
+主角去做：在哪件东西前，做什么
 旁白：做的时候看到什么
 人物全名：说的话
 
-人物说话只能写在“主角去做”后面，那是他们露面的镜头。主角说话也写他的全名。只写这一段，不要写到下一个转折去。`
+“主角去做”的镜头开始时，玩家已经让主角站在那件东西前了，所以写他在那里做的事，不写“走到”“走向”。人物说话只能写在“主角去做”后面，那是他们露面的镜头。主角说话也写他的全名。只写这一段，不要写到下一个转折去。`
 
-const SECTION_CHECK = `作者给这一段定的意图是观众经历一个转折。下面有这个意图、这一段的剧本，以及一位第一次看的观众看到这里时的真实反应。判断这位观众是不是被这一段带到了意图里“之后”的状态：他现在的想法和好奇，是不是作者想让他有的。不要求他复述之前的想法，也不要求他用同样的字眼。他早就猜到了、没看懂、或者只是被旁白告知而毫无感觉，才算没有。只说哪里没发生，不说怎么改。只输出 JSON：{ "landed": true 或 false, "why": "一两句，引用观众的话" }`
+const SECTION_CHECK = `作者给这一段定的意图是观众经历一个转折。下面有这个意图、这一段的剧本，以及一位第一次看的观众看到这里时的真实反应。判断这位观众是不是被这一段带到了意图里“之后”的状态：他现在的想法和好奇，是不是作者想让他有的。不要求他复述之前的想法，也不要求他用同样的字眼。他早就猜到了、没看懂、或者只是被旁白告知而毫无感觉，才算没有。
+
+被告知不等于经历。拿剧本和观众的话对一下：如果观众现在的想法，只是把旁白或主角自己说出口的结论换个说法复述了一遍（剧本里写“这是他自导自演的戏”，观众说“原来是自导自演”），算没有，因为这句话是作者替他想的，换成任何观众都会这么复述。下面还给了这一段的形状。只有一步、从头到尾只有主角一个人开口的一段，多半也算没有：没有人挡他，就没有东西被推翻。例外是这个转折本来就只能由主角独自经历，比如全片开头他一个人发现一件事，或者最后留下的那个画面。
+
+只说哪里没发生，不说怎么改。只输出 JSON：{ "landed": true 或 false, "why": "一两句，引用观众的话或剧本的原句" }`
 const VIEWER_NOW = '你第一次看这部片子，只知道下面这些。照实说你现在怎么想：你以为是怎么回事，刚才有没有哪一刻吃惊，猜接下来会怎样，还想不想看，哪里走神或看不懂。不要替作者圆，不提修改建议，就像跟朋友聊。'
 const WHOLE_JUDGE = `你是制片人，决定一部互动短片的剧本能不能开拍。这部戏是一段一段写的。开拍很贵，多数稿子都不够好。下面有转折表、按段标好号的剧本，以及两位读者的反应。指出最拖后腿的段落，只说哪里不行，不说怎么改。只输出 JSON：
 { "verdict": "能开拍 或 不能开拍", "weak": [{ "section": 段号数字, "why": "这一段最要命的问题，引用原句" }], "why": "整体一段话" }
@@ -481,6 +506,14 @@ const planOnly = answer => {
 
 const joined = anchors => anchors.filter(anchor => anchor.script).map(anchor => anchor.script).join(NL + NL)
 
+// How a section is built, counted: a reader asked whether a turn landed is too easily told that it did by the narration.
+export function sectionShape(text, player, names = [player]) {
+  const { steps } = parseScript(text, player, names)
+  const said = steps.flatMap(step => step.lines)
+  const alone = steps.filter(step => !step.lines.some(line => line.who !== player)).length
+  return `这一段有 ${steps.length} 步，其中 ${alone} 步没有别人开口。主角说了 ${said.filter(line => line.who === player).length} 句，别的人物一共说了 ${said.filter(line => line.who !== player).length} 句。`
+}
+
 async function writeSection(room, project, anchor, notes = '') {
   const { say, judge, log } = room
   const places = reachableAt(project, anchor)
@@ -528,12 +561,13 @@ ${maybe.length ? `${NL}玩家可以先做这一段，也可以先做这些，你
       continue
     }
     const reaction = await say(VIEWER_NOW, [before, text].filter(Boolean).join(NL + NL), { thinking: false, maxTokens: 2048, note: `${anchor.title} · 观众在看` })
-    const check = await judge(SECTION_CHECK, `意图：${NL}${anchorWords(anchor)}${NL}${NL}这一段：${NL}${text}${NL}${NL}观众的反应：${NL}${reaction}`, { maxTokens: 4096, note: `${anchor.title} · 看转折有没有发生` })
+    const shape = sectionShape(text, project.cast.find(person => person.playable)?.name, project.cast.map(person => person.name))
+    const check = await judge(SECTION_CHECK, `意图：${NL}${anchorWords(anchor)}${NL}${NL}这一段：${NL}${text}${NL}${NL}这一段的形状：${shape}${NL}${NL}观众的反应：${NL}${reaction}`, { maxTokens: 4096, note: `${anchor.title} · 看转折有没有发生` })
     const landed = check?.landed === true
     attempt = { script: text, plan: planOnly(answer), viewer: reaction, landed, why: clean(check?.why), problems }
     log(`${anchor.title}：第 ${round} 稿 ${text.length} 字，${landed ? '转折发生了' : `没发生：${clean(check?.why).slice(0, 80)}`}`)
     if (landed) break
-    trouble = `${clean(check?.why)}${NL}观众当时的反应：${reaction}`
+    trouble = `${clean(check?.why)}${NL}他那一稿的形状：${shape}${NL}观众当时的反应：${reaction}`
   }
   if (attempt.problems.length) throw new FatalError(`“${anchor.title}”写了 ${SECTION_TRIES} 稿都有拍不了的地方：${attempt.problems.join(' ')}`)
   return attempt
@@ -566,6 +600,86 @@ async function reviewWhole(room, project) {
   })
 }
 
+// ---------------------------------------------------------------- whether it holds together
+// Each section is written by someone who saw only what came before it, and the readers above are asked about drama. Nobody
+// else asks whether one section says what another denies. Seen on 《雾都码头谜案》: "you dared come alone" and, a section
+// later, "the reinforcements I sent for"; a painting in one man's arms that is then in the detective's hand.
+const CONTINUITY_ROUNDS = 2
+const MOST_FAULTS = 6
+const CONTINUITY = `你是场记，只管前后对不对得上，戏好不好不归你管。下面有真相、人物表、地点图、转折表和按段标好号的剧本。段落按写的顺序排，观众大体也按这个顺序看；转折表里没写“等……之后”的同一章的段，观众可能先看其中任何一个。
+
+逐段核对，只找确凿的矛盾，拿不准的不算，也不要挑文笔：
+- 东西在谁手里。前面在一个人手里，后面没演它换手，就到了另一个人手里。
+- 人在哪。一个人在一个地方露面之后就一直在那里；后面说他走了、被带走了，或者没露过面的人被当成在场，都是对不上。
+- 观众没看到过的事被当成已经发生，比如前面从没演过的“我提前安排的人”。
+- 两段说的事实相反：一个人来的，和带了人来的；门锁着，和门开着。
+- 和真相相反。
+- 不在人物表里的人在画面里做事：便衣、手下、路人。这部戏拍不出没有名字的人。
+- 事情发生的地方，和这一段所在的地方对不上。
+
+每一条指出要改的那一段。两段矛盾时，改后写的那一段，因为前一段观众已经看到了。只输出 JSON：
+{ "faults": [{ "section": 段号数字, "what": "引用这一段的原句，说它和第几段的哪一句、或者和哪条事实对不上", "fix": "这一段里这件事该是什么样，一句，只说事实" }] }
+没有就是空数组，最多 ${MOST_FAULTS} 条。`
+const CONTINUITY_FIX = '下面这段剧本有几处和前后对不上。只改这几处，改到对得上为止，其他每个字都不动，格式也不动（【地点名】、旁白：、主角去做：、人物全名：）。不能添人物表里没有的人，不能让一个镜头说的话变多。输出改好后的整段剧本，不要解释。'
+
+const continuityUser = project => `真相（观众看不到）：
+${project.truth}
+
+人物表：${project.cast.map(person => `${person.name}${person.playable ? '（主角）' : ''}`).join('、')}
+
+地点图：
+${mapText(project)}
+
+转折表：
+${outlineText(project)}
+
+${anchorsOf(project).map((anchor, index) => `--- 第 ${index + 1} 段（${anchor.id} ${anchor.title}）---${NL}${anchor.script ?? '（还没写）'}`).join(NL + NL)}`
+
+// What a reader found, by the section each fault is put right in. What is said of no section that exists is dropped.
+export function faultsBySection(review, anchors) {
+  const found = new Map()
+  for (const fault of (Array.isArray(review?.faults) ? review.faults : []).slice(0, MOST_FAULTS)) {
+    const anchor = anchors[Number(fault?.section) - 1]
+    const what = clean(fault?.what)
+    if (!anchor?.script || !what) continue
+    found.set(anchor.id, [...(found.get(anchor.id) ?? []), `${what}${clean(fault.fix) ? ` 要改成：${clean(fault.fix)}` : ''}`])
+  }
+  return found
+}
+
+// Put right where they are, a line or two at a time: a section written again from nothing would lose what its readers liked,
+// and bring new faults of its own.
+async function holdTogether(room, id) {
+  const { say, judge, log, progress } = room
+  for (let round = 1; ; round++) {
+    const project = await readProject(id)
+    progress('场记在对前后')
+    const review = await judge(CONTINUITY, continuityUser(project), { maxTokens: 8192, note: '场记在对前后' })
+    const faults = faultsBySection(review, anchorsOf(project))
+    if (!faults.size) {
+      if (review) log(round === 1 ? '场记对过前后，没有对不上的地方。' : '场记再对一遍，对不上的地方都改好了。')
+      return
+    }
+    if (round > CONTINUITY_ROUNDS) {
+      log(`改了 ${CONTINUITY_ROUNDS} 轮还有对不上的地方，没有再改，可以告诉 Agent 怎么改：${[...faults.values()].flat().join(' ').slice(0, 600)}`)
+      return
+    }
+    for (const [anchorId, list] of faults) {
+      const latest = await readProject(id)
+      const anchor = anchorsOf(latest).find(other => other.id === anchorId)
+      log(`“${anchor.title}”有 ${list.length} 处对不上：${list.join(' ').slice(0, 240)}`)
+      const before = joined(seenBefore(latest, anchor).surely)
+      const text = scriptOnly(await say(CONTINUITY_FIX, `对不上的地方：${NL}${list.join(NL)}${NL}${NL}人物表：${latest.cast.map(person => person.name).join('、')}${NL}${NL}前面的剧本，观众已经看到，不能改：${NL}${before || '（这一段是开头）'}${NL}${NL}要改的这一段：${NL}${anchor.script}`, { thinking: false, note: `${anchor.title} · 改对不上的地方` }))
+      const problems = filmingProblems(text, latest, reachableAt(latest, anchor))
+      if (problems.length) {
+        log(`“${anchor.title}”改完有拍不了的地方，留着原来的：${problems.join(' ').slice(0, 200)}`)
+        continue
+      }
+      await saveAnchor(id, anchorId, saved => { saved.script = text })
+    }
+  }
+}
+
 // ---------------------------------------------------------------- from script to what gets filmed
 const CLERK_SYSTEM = `你是场记，把写好的剧本拆成拍摄步骤。旁白和台词已经定了，不归你管，你只补拍摄需要的东西。只输出一个 JSON 对象，不要解释，不要 Markdown 代码块。`
 
@@ -579,7 +693,7 @@ ${[...new Set(steps.map(step => step.place))].map(title => {
     const scene = findPlace(title, project.scenes)
     return `“${scene.title}”：${scene.place} 这里已经用过的东西（可以再用，也可以添新的）：${objectsIn(scene).join('、') || '没有'}`
   }).join('\n')}
-主角这时手里一定有的道具：${[...held].join('、') || '没有'}
+主角这时手里一定有的道具：${[...held].map(id => `${propNamesOf(project).get(id) ?? id}（id 是 ${id}）`).join('、') || '没有'}
 
 这一段的剧本：
 ${anchor.script}
@@ -598,9 +712,10 @@ ${steps.map((step, index) => `第 ${index + 1} 步，在“${step.place}”：�
       "action": "这次交互的视频内容：分镜头写人物的手怎么碰到这件东西、做了什么、看到了什么，全程不露脸，只有背影、肩膀和手",
       "face": "一个露脸的中近景镜头，写谁在哪、表情和动作。这一步有台词就必须写；没有就留空",
       "face_cast": ["这个露脸镜头里除${player?.name ?? '主角'}外的人物名，和人物表一字不差，最多两个"],
-      "arrives": ["face_cast 里这一步才走进来的人，原本不在这个地方；一开始就在的不写，没有就是空数组"],
+      "arrives": ["face_cast 里这一步才出现的人：原本不在这里，或者躲着、出门了；一开始就在的不写，没有就是空数组"],
       "settle": "可选：露脸镜头之后，回到原来构图之前的一个不露脸的特写",
-      "sound": "这段视频的环境声和动作声，人说的话不写这里",
+      "sound": "action 这个镜头的声音：环境声和这次动作的声音，人说的话不写这里",
+      "ambience": "这个地方这时一直有的环境声（风、水、炉火、远处的车），不写一次性的动作声，也不写人声。露脸镜头和收尾特写用它",
       "gives": ["完成后得到的道具 id，没有就是空数组"],
       "takes": ["这一步用掉的道具 id，没有就是空数组"]
     }
@@ -611,13 +726,25 @@ ${steps.map((step, index) => `第 ${index + 1} 步，在“${step.place}”：�
 要求：
 - steps 正好 ${steps.length} 项，和上面的步骤一一对应，顺序不变。
 - 物件必须是一开始就立在地上的完整家具或大件东西，不能是墙、门、窗、地面或人，也不能是另一件东西的一部分（暗格、抽屉、把手），也不能是互动之后才出现的东西。这些都写进它所属那件东西的 action 里。要和人说话，就绑在他身边的一件东西上（酒馆的吧台、办公室的账台）。
-- action 里只有主角的手和背影，不能写别的人物。其他人物只能出现在 face 里。
-- face_cast 里的人物从这个地方一开始就站在这件东西旁边，玩家走进来就看得到他。他要是这一步才来的（推门进来、闯进来），写进 arrives，face 里写他进来。
+- 说的是同一件东西，就用同一个名字。这个地方已经用过的东西，优先绑在它上面，名字一字不差；不要因为剧本写了“墙边的”“门口的”，就再添一件一样的东西。
+- 镜头开始时主角已经站在这件东西前。action 从他在那里做的事写起，不写他走过来。
+- action 里只有主角的手和背影，不能写别的人物。其他人物只能出现在 face 里，而且只能是人物表里的人：没有名字的人（便衣、路人、手下）拍不出来，不要写。
+- face 只写谁在哪、什么表情、做什么。台词会另外交给镜头，不要在 face 里再抄一遍。
+- 游戏画面里所有人都是站着的，露脸镜头前后都要切回那个画面。face 里的人也写成站着：不写谁坐着、蹲着、躺着、被按住或被带走。
+- action 里一次性的响动（踹门、东西落地、上膛）只写进 sound。ambience 会垫在后面两个镜头下面，写进去就会再响一遍。
+- id 只用在 gives 和 takes 里。action、face、settle 里提到道具时写它的名字。主角手里的道具，这一步用不到就不要写进画面。
+- face_cast 里的人物从这个地方一开始就站在这件东西旁边，玩家走进来就看得到他。他要是这一步才出现的（推门进来、闯进来、躲着的人现身、出门的人回来），写进 arrives，face 里写他出现。
 - 视频和图片里不能有文字，不要写需要看清字的镜头。
 - props 只列这一段新出现、并且 gives 里用到的道具。`
 }
 
 const propIdList = value => (Array.isArray(value) ? value : String(value ?? '').split(/[,，、\s]+/)).map(id => clean(id).toLowerCase().replace(/[^a-z0-9_]/g, '')).filter(Boolean)
+
+
+// The thing a step is tied to, under the name this place already has for it. A writer says "the crates by the wall" in one
+// step and "the crates by the door" in the next, and each new name is one more pile in the room: four of them, on
+// 《雾都码头谜案》, which no painter could tell apart.
+const thingAlreadyHere = (object, known) => known.find(name => name === object) ?? known.find(name => kindOf(name) === kindOf(object)) ?? object
 
 export function checkClerkAnswer(answer, { project, steps, held, knownProps }) {
   const list = Array.isArray(answer.steps) ? answer.steps : []
@@ -627,18 +754,28 @@ export function checkClerkAnswer(answer, { project, steps, held, knownProps }) {
   const props = (Array.isArray(answer.props) ? answer.props : []).map(prop => ({ id: propIdList(prop.id)[0] ?? '', name: clean(prop.name), look: clean(prop.look) })).filter(prop => prop.id)
   const defined = new Set([...knownProps, ...props.map(prop => prop.id)])
   const inHand = new Set(held)
+  const called = new Map([...propNamesOf(project), ...props.map(prop => [prop.id, prop.name])])
+  // What a shot is made from runs on into what the prompt says next, so each piece is closed here, where it is written down.
+  const shown = value => ended(namedProps(clean(value), called))
+  // What each place already has to walk up to, and what the steps before this one in the same answer add to it.
+  const thingsIn = new Map()
+  const thingsAt = title => {
+    if (!thingsIn.has(title)) thingsIn.set(title, [...new Set((findPlace(title, project.scenes ?? [])?.beats ?? []).map(beat => beat.objectName))])
+    return thingsIn.get(title)
+  }
   const faults = []
   const beats = list.map((raw, index) => {
     const step = steps[index]
     const label = `第 ${index + 1} 步`
-    const object = clean(raw.object)
+    const object = thingAlreadyHere(clean(raw.object), thingsAt(step.place))
     if (!clean(raw.objective) || !object) faults.push(`${label}缺 objective 或 object。`)
     if (NOT_A_THING.test(object)) faults.push(`${label}的“${object}”不能是互动的东西，墙、门、窗和地面摆不出来。换成立在地上的家具或大件。`)
-    const action = clean(raw.action)
+    else if (object && !thingsAt(step.place).includes(object)) thingsAt(step.place).push(object)
+    const action = shown(raw.action)
     if (!action) faults.push(`${label}没写 action。每次交互都要拍成视频。`)
     const stranger = names.find(name => name !== player && action.includes(name))
     if (stranger) faults.push(`${label}的 action 写到了${stranger}，不露脸的镜头里不能有别的人物，把他写进 face。`)
-    const face = clean(raw.face)
+    const face = ended(withoutLines(namedProps(clean(raw.face), called), step.lines))
     if (step.lines.length && !face) faults.push(`${label}有台词，要写 face，台词是在露脸镜头里说出来的。`)
     // Whoever speaks or is written into the shot is in the shot, or their portrait is never shown to the video model.
     const named = [...(Array.isArray(raw.face_cast) ? raw.face_cast.map(clean) : []), ...step.lines.map(line => line.who), ...names.filter(name => face.includes(name))]
@@ -657,7 +794,7 @@ export function checkClerkAnswer(answer, { project, steps, held, knownProps }) {
     }
     return {
       objective: clean(raw.objective), objectName: object, prompt: clean(raw.prompt) || '按 E 查看', tooEarly: clean(raw.too_early), during: step.during, after: step.after,
-      performed: true, action, face, faceCast, ...(arrives.length ? { arrives } : {}), settle: face ? clean(raw.settle) : '', sound: clean(raw.sound), ...(step.lines.length ? { lines: step.lines } : {}), gives, takes,
+      performed: true, action, face, faceCast, ...(arrives.length ? { arrives } : {}), settle: face ? shown(raw.settle) : '', sound: unended(raw.sound), ...(face && unended(raw.ambience) ? { ambience: unended(raw.ambience) } : {}), ...(step.lines.length ? { lines: step.lines } : {}), gives, takes,
     }
   })
   if (faults.length) throw new Error(faults.join(' '))
@@ -726,6 +863,8 @@ export async function writeScripts({ id, provider, signal, log, progress, metric
       const { script, plan, viewer, landed, why: whyNot } = await writeSection(room, { ...project }, anchor, why)
       await saveAnchor(id, anchorId, saved => Object.assign(saved, { script, plan, viewer, landed, whyNot: landed ? '' : whyNot }))
     }
+    // Last, since a section written again above can contradict the ones after it.
+    await holdTogether(room, id)
     project = await readProject(id)
     project.scriptsReviewed = true
     await writeProject(project)

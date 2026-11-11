@@ -64,6 +64,31 @@ test('who stands in a room: whoever a face shot shows, by its thing, from the st
   assert.deepEqual(who(at('ending').first), ['c2', 'c3'])
 })
 
+test('in a place come back to later, someone is there only from the first step here of their part of the story', () => {
+  // Seen on 《雾都码头谜案》: the study opens with Watson just gone out, and he comes back in the last chapter.
+  const scene = { id: 's1', beats: [
+    { id: 'b1', faceCast: [], face: '' },
+    { id: 'b2', faceCast: [], face: '' },
+    { id: 'b3', faceCast: ['老板'], face: '我看着门。' },
+    { id: 'b4', faceCast: ['老板'], face: '老板坐在椅子上抱怨。' },
+  ] }
+  const anchors = [
+    { id: 'a1', steps: [{ scene: 's1', beat: 'b1' }, { scene: 's1', beat: 'b2' }] },
+    { id: 'a9', steps: [{ scene: 's2', beat: 'b1' }, { scene: 's1', beat: 'b3' }, { scene: 's1', beat: 'b4' }] },
+  ]
+  const onStage = onStageFrom(cast, scene, anchors)
+  assert.deepEqual(onStage, [{ cast: 'c2', by: 'b4', from: 'b3' }])
+  const at = inPicture({ ...scene, onStage })
+  assert.deepEqual([at('opening').first, at('b2').last].map(entries => entries.length), [0, 0], 'not there the first time')
+  assert.deepEqual([at('b3').first, at('b4').first, at('ending').first].map(entries => entries.map(entry => entry.cast)), [['c2'], ['c2'], ['c2']])
+  assert.deepEqual(onStageFrom(cast, scene, [{ id: 'a1', steps: scene.beats.map(beat => ({ scene: 's1', beat: beat.id })) }]), [{ cast: 'c2', by: 'b4' }], 'one part throughout: there from the start')
+  // His boots by the door first, then him: coming in is said of the step before the one he is seen in.
+  const bootsFirst = { ...scene, beats: scene.beats.map(beat => beat.id === 'b3' ? { ...beat, arrives: ['老板'] } : beat) }
+  assert.deepEqual(onStageFrom(cast, bootsFirst, anchors), [{ cast: 'c2', by: 'b4', after: 'b3' }])
+  const atBoots = inPicture({ ...bootsFirst, onStage: onStageFrom(cast, bootsFirst, anchors) })
+  assert.deepEqual([atBoots('b3').first.length, atBoots('b3').last.length], [0, 1])
+})
+
 test('a person stands near their thing, seen whole, clear of every mark, and the room can still be walked', () => {
   const scene = withPeople()
   const stage = buildStage(scene)
@@ -172,6 +197,44 @@ test('with a crowd in the room, the shot is told how many people there are and w
   assert.match(chestStart.text, /画面里一共3个人。我是第一帧里画面(最左边|左侧|中间|右侧|最右边)背对镜头、穿外套的那一个/)
   assert.doesNotMatch(chestEnd.text, /一共/, 'pinned at both ends, it has nowhere to wander')
   assert.doesNotMatch(clips.find(clip => clip.id === 'shelf').parts[0].text, /一共/, 'one other is no crowd: the shot stays as it was')
+})
+
+test('a face shot shows only who it names or hears, or who stands in the room by then', () => {
+  // Seen on 《雾都码头谜案》: the coal heaver, listed for the pier but neither named nor heard, was put in the shot beside Holmes.
+  const scene = withPeople()
+  const listed = { ...scene, beats: scene.beats.map(beat => beat.id === 'chest' ? { ...beat, faceCast: ['老板', '警察'], face: '老板擦着箱子。' } : beat) }
+  const faceOf = (s, id) => filmClips(projectOf(s), s, stageOf(s)).find(clip => clip.id === id).parts.find(part => part.showsFace)
+  assert.deepEqual(faceOf(listed, 'chest').people.map(person => person.name), ['我', '老板', '警察'], 'the policeman came in at the shelf, so he is there')
+  const nobody = { ...listed, onStage: [] }
+  assert.deepEqual(faceOf(nobody, 'chest').people.map(person => person.name), ['我', '老板'], 'named, so in; listed only, and not in the room, so out')
+  const older = { ...listed, onStage: undefined }
+  assert.deepEqual(faceOf(older, 'chest').people.map(person => person.name), ['我', '老板', '警察'], 'a story from before keeps its shots')
+})
+
+test('the player talking alone talks to himself, and nobody is given him to talk to', () => {
+  // Seen on 《雾都码头谜案》: told to look at whoever he talks to, Holmes alone in the study was given a shoulder at the edge.
+  const scene = withPeople()
+  const talksAlone = { ...scene, beats: scene.beats.map(beat => beat.id === 'chest' ? { ...beat, faceCast: [], face: '我盯着木箱。', lines: [{ who: '我', says: '有人动过它。' }] } : beat) }
+  const face = s => filmClips(projectOf(s), s, stageOf(s)).find(clip => clip.id === 'chest').parts.find(part => part.showsFace).text
+  const emptyRoom = { ...talksAlone, onStage: [] }
+  assert.match(face(emptyRoom), /自言自语/)
+  assert.doesNotMatch(face(emptyRoom), /看着对方/)
+  // Seen there too: with three others standing in the warehouse, Holmes told the man who had cornered him that help was coming,
+  // and said it to his own hands. They are still kept out of a shot that has no portrait of them.
+  assert.match(face(talksAlone), /都在画面外：这些话是说给他们听的/)
+  assert.doesNotMatch(face(talksAlone), /自言自语|看着对方/)
+  assert.match(face(talksAlone), /画面边缘也不得有别人的背影/)
+  assert.match(face(scene), /看着对方/, 'with someone there, he talks to them')
+  assert.match(face({ ...talksAlone, onStage: undefined }), /看着对方/, 'a story from before keeps its shots')
+})
+
+test('someone coming in during a step is not in its face shot unless it says so', () => {
+  // Holmes asks whether Watson is back; Watson walks in after.
+  const scene = withPeople()
+  const unnamed = { ...scene, beats: scene.beats.map(beat => beat.id === 'shelf' ? { ...beat, face: '我盯着门口。' } : beat) }
+  const faceOf = s => filmClips(projectOf(s), s, stageOf(s)).find(clip => clip.id === 'shelf').parts.find(part => part.showsFace)
+  assert.deepEqual(faceOf(scene).people.map(person => person.name), ['我', '警察'], 'named coming in, so in')
+  assert.deepEqual(faceOf(unnamed).people.map(person => person.name), ['我'])
 })
 
 test('a person nobody could find room for is left out of the pictures and of the words alike', () => {

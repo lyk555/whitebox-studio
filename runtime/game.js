@@ -469,7 +469,7 @@ const others = PEOPLE.map(person => {
 
 // A frame for a video says who is there. Otherwise it is who the story has brought in so far.
 let othersInFrame = null
-const othersHere = () => othersInFrame ?? new Set(peopleThere(id => story.isDone(id)).map(person => person.id))
+const othersHere = () => othersInFrame ?? new Set(peopleThere(id => story.isReached(id), id => story.isDone(id)).map(person => person.id))
 
 // Walking keeps clear of whoever is standing there.
 function walkableNow() {
@@ -2327,22 +2327,24 @@ const OPENING_POSE = { position: [...CAMERAS.a.position], target: OPENING_SHOT.t
 // Every video in the film and the pictures it has to start and end on. Only the door changes the
 // room, and the last shot runs on to black, so it has no picture to end on.
 function filmShots() {
-  // Who stands in the room once the steps before have been done, in the order they come in this place.
-  const thereAfter = done => new Set(peopleThere(id => done.includes(id)).map(person => person.id))
-  const room = { camera: 'a', mark: SPAWN, open: false, note: true, present: thereAfter([]) }
+  // Who stands in the room at a step's shot, in the order steps come in this place: everyone whose part of the story has got here, and
+  // who has come in by then.
+  const indexOf = id => BEATS.findIndex(beat => beat.id === id)
+  const thereAt = (at, done) => new Set(peopleThere(id => indexOf(id) <= at, id => done.includes(id)).map(person => person.id))
+  const room = { camera: 'a', mark: SPAWN, open: false, note: true, present: thereAt(-1, []) }
   // Close enough in the opening's long lens to show a face is too close for the video model: they walk in as it pulls back.
   const openingClose = new Set([...room.present].filter(id => !PEOPLE.find(person => person.id === id)?.walksIn))
   return [
     { clip: 'opening', first: { ...room, pose: OPENING_POSE, present: openingClose }, last: { ...room, pose: firstView() } },
     ...BEATS.filter(beat => beat.clip).map(beat => {
       const before = BEATS.slice(0, BEATS.indexOf(beat)).map(earlier => earlier.id)
-      const start = { camera: beat.camera, mark: beat.anchor, open: false, note: false, pose: shotFor(beat), present: thereAfter(before) }
+      const start = { camera: beat.camera, mark: beat.anchor, open: false, note: false, pose: shotFor(beat), present: thereAt(indexOf(beat.id), before) }
       // The first beat picks up what lies out on its object, so its shot starts with it there and ends with it gone.
       const first = beat === BEATS[0] ? { ...start, note: true } : start
       // The step a chapter closes on runs on to black, like the last shot of a film. Whoever came in during it is there at its end.
-      return { clip: beat.clip, first, ...(beat.isEnding ? {} : { last: { ...start, open: Boolean(beat.opensDoor), present: thereAfter([...before, beat.id]) } }) }
+      return { clip: beat.clip, first, ...(beat.isEnding ? {} : { last: { ...start, open: Boolean(beat.opensDoor), present: thereAt(indexOf(beat.id), [...before, beat.id]) } }) }
     }),
-    ...(JOURNEY ? [] : [{ clip: LAST_SHOT.clip, first: { camera: LAST_SHOT.camera, mark: LAST_SHOT.anchor, open: true, note: false, pose: shotFor(LAST_SHOT), present: thereAfter(BEATS.map(beat => beat.id)) } }]),
+    ...(JOURNEY ? [] : [{ clip: LAST_SHOT.clip, first: { camera: LAST_SHOT.camera, mark: LAST_SHOT.anchor, open: true, note: false, pose: shotFor(LAST_SHOT), present: thereAt(BEATS.length, BEATS.map(beat => beat.id)) } }]),
   ]
 }
 
@@ -2492,7 +2494,7 @@ if (!jobId && clips.opening && viewMode === 'plate' && (!JOURNEY || firstTimeHer
 // For automated checks only.
 window.__loop = {
   labels: () => paintedLabels,
-  snapshot: () => ({ scene: SCENE_ID, journey: JOURNEY ? story.progress : null, x: player.x, z: player.z, yaw: player.yaw, gait: player.gait, camera: activeCameraId, doorOpen, phase, viewMode, clips: Object.keys(clips), sound: sound.state, items: story.items, propOnStage, objective: story.objective, line: storyEl.textContent, prompt: promptEl.textContent, view: follow.pose, look: follow.look, plateMix: follow.plateMix }),
+  snapshot: () => ({ scene: SCENE_ID, journey: JOURNEY ? story.progress : null, x: player.x, z: player.z, yaw: player.yaw, gait: player.gait, camera: activeCameraId, doorOpen, phase, viewMode, clips: Object.keys(clips), sound: sound.state, items: story.items, propOnStage, people: [...othersHere()], objective: story.objective, line: storyEl.textContent, prompt: promptEl.textContent, view: follow.pose, look: follow.look, plateMix: follow.plateMix }),
   teleport: (x, z) => { player.x = x; player.z = z },
   look: lookWithMouse,
   pressE: interact,
