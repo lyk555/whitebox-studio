@@ -8,8 +8,8 @@ import { boundsFromPaint, footprintOf, isColourMap, labelThings, nearestWalkable
 import { fitToWhitebox, silhouetteOverlap } from './plateFit.js'
 import { createHud } from './hud.js'
 import { createSound, createStepCounter } from './sound.js'
-import { BEATS, createStory, EXITS, ITEMS, JOURNEY, LAST_OBJECTIVE, LAST_SHOT, OPENING, OPENING_SHOT, rehearsalProgress, SCENE_ID, SHOT_DISTANCE, STAGE_PROP, TITLE } from './story.js'
-import { BLOCKS, CAMERA_SWITCH, CAMERAS, DOOR, DOOR_ANCHOR, EXIT_KIND, EXIT_REACH, EXIT_Z, CORRIDOR_CAMERA, GLOWS, isWalkable, paintedBy, RELAXED, ROOM, ROOM_KIND, SHELLS, SPAWN, WAYS_OUT } from './world.js'
+import { BEATS, createStory, EXITS, ITEMS, JOURNEY, LAST_OBJECTIVE, LAST_SHOT, OPENING, OPENING_SHOT, PEOPLE, peopleThere, rehearsalProgress, SCENE_ID, SHOT_DISTANCE, STAGE_PROP, TITLE } from './story.js'
+import { BLOCKS, CAMERA_SWITCH, CAMERAS, DOOR, DOOR_ANCHOR, EXIT_KIND, EXIT_REACH, EXIT_Z, CORRIDOR_CAMERA, GLOWS, isWalkable, paintedBy, PLAYER_RADIUS, RELAXED, ROOM, ROOM_KIND, SHELLS, SPAWN, WAYS_OUT } from './world.js'
 
 const WIDTH = 1280
 const HEIGHT = 720
@@ -199,6 +199,7 @@ if (EXIT_KIND !== 'door') {
 // A place on the map that nothing leads out of, like the bottom of a well, has nothing to mark.
 if (JOURNEY && !EXITS.length) doorLeaf.visible = false
 // Every other way out of a place on the map gets a marker of its own.
+const wayMarkers = []
 for (const way of WAYS_OUT.slice(1)) {
   const low = ROOM_KIND === 'outdoor' && way.kind !== 'door'
   const marker = new THREE.Mesh(new THREE.BoxGeometry(way.width, way.height * (low ? 0.1 : 1), 0.008), clayDoorMaterial)
@@ -207,6 +208,7 @@ for (const way of WAYS_OUT.slice(1)) {
   marker.userData.clay = clayDoorMaterial
   scene.add(marker)
   solids.push(marker)
+  wayMarkers.push(marker)
 }
 
 // Only ever seen in the door-mask pass.
@@ -442,6 +444,86 @@ function poseFigure(player) {
   figure.root.rotation.y = player.yaw
   contact.position.x = player.x
   contact.position.z = player.z
+}
+
+// ---------------------------------------------------------------- the others in the room
+// Each stands where the stage put them: a picture turned to the camera like the player's, in the room's light, so they are
+// already there when the video with their face cuts in. In the whitebox a clay figure stands there instead.
+const PERSON_HEIGHT = 1.75 // Metres, as the stage keeps room for.
+const PERSON_REACH = 0.3 + PLAYER_RADIUS // How near the player's centre comes to theirs.
+const others = PEOPLE.map(person => {
+  const material = new THREE.MeshBasicMaterial({ transparent: true, alphaTest: 0.6, depthWrite: false, side: THREE.DoubleSide })
+  const picture = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material)
+  const clay = createFigure()
+  clay.root.position.set(person.x, 0, person.z)
+  const shadow = new THREE.Mesh(contact.geometry, contact.material)
+  shadow.rotation.x = -Math.PI / 2
+  shadow.position.set(person.x, 0.006, person.z)
+  shadow.renderOrder = 1
+  for (const mesh of [picture, clay.root, shadow]) {
+    mesh.visible = false
+    scene.add(mesh)
+  }
+  return { person, picture, material, clay, shadow, loaded: false }
+})
+
+// A frame for a video says who is there. Otherwise it is who the story has brought in so far.
+let othersInFrame = null
+const othersHere = () => othersInFrame ?? new Set(peopleThere(id => story.isDone(id)).map(person => person.id))
+
+// Walking keeps clear of whoever is standing there.
+function walkableNow() {
+  const there = othersHere()
+  const standing = others.filter(other => there.has(other.person.id)).map(other => other.person)
+  if (!standing.length) return isWalkable
+  return (x, z, open) => isWalkable(x, z, open) && standing.every(person => Math.hypot(x - person.x, z - person.z) >= PERSON_REACH)
+}
+
+async function loadOthers() {
+  for (const other of others) {
+    if (!(await assetExists(other.person.file))) continue
+    const image = await loadImage(`assets/${other.person.file}`)
+    const texture = new THREE.Texture(image)
+    texture.colorSpace = THREE.SRGBColorSpace
+    // The picture faces left. Standing left of the player, they are turned the other way.
+    if (other.person.mirror) {
+      texture.repeat.x = -1
+      texture.offset.x = 1
+    }
+    texture.needsUpdate = true
+    other.material.map?.dispose()
+    other.material.map = texture
+    other.material.needsUpdate = true
+    other.picture.scale.set(PERSON_HEIGHT * image.naturalWidth / image.naturalHeight, PERSON_HEIGHT, 1)
+    other.picture.position.set(other.person.x, PERSON_HEIGHT / 2, other.person.z)
+    other.loaded = true
+  }
+}
+
+function poseOthers(viewer, light) {
+  const there = othersHere()
+  const rendered = showsRenderedCharacter()
+  const { position, target } = CAMERAS[activeCameraId]
+  const along = (x, z) => (x - position[0]) * (target[0] - position[0]) + (z - position[2]) * (target[2] - position[2])
+  for (const other of others) {
+    const { person } = other
+    const shown = actorVisible && there.has(person.id)
+    other.picture.visible = shown && rendered && other.loaded
+    other.clay.root.visible = shown && !other.picture.visible
+    other.shadow.visible = shown
+    other.clay.root.rotation.y = Math.atan2(viewer.position.x - person.x, viewer.position.z - person.z)
+    if (!other.picture.visible) continue
+    other.picture.rotation.y = other.clay.root.rotation.y
+    // Nearer the camera than the player, they go over the player and over whatever the picture has in front of the player.
+    // Further, under both. Nothing in the picture stands in front of them: the stage does not put them there.
+    other.picture.renderOrder = along(person.x, person.z) < along(player.x, player.z) ? 4.5 : 1.9
+    other.material.color.copy(light(person))
+  }
+}
+
+// Shown only in the picture they were posed for: other renders of this scene, the guides and masks, never see them.
+function hideOthers() {
+  for (const other of others) other.picture.visible = other.clay.root.visible = other.shadow.visible = false
 }
 
 // ---------------------------------------------------------------- plates
@@ -1566,8 +1648,18 @@ function renderSecondCameraGuide({ holes = false, hideFurniture = false, unpaint
 
 // The figure takes its brightness from the plate around its feet, so it sits in the room's light.
 const footPoint = new THREE.Vector3()
-function lightAtFeet(plate, cameraId) {
-  footPoint.set(player.x, 0.6, player.z).project(cameras[cameraId])
+const lightAtFeet = (plate, cameraId) => lightAt(plate, cameraId, player.x, player.z)
+
+// Anyone else in the room takes their light the same way, from where they stand.
+function lightOfOther(person) {
+  if (!RELAXED || viewMode !== 'plate' || !platesReady()) return spriteMaterial.color
+  const a = lightAt(plates[doorOpen ? 'a_open' : 'a_closed'], 'a', person.x, person.z)
+  const b = lightAt(plates.b, 'b', person.x, person.z)
+  return new THREE.Color(...figureTint(a.map((value, i) => value + (b[i] - value) * viewPlateMix())))
+}
+
+function lightAt(plate, cameraId, x, z) {
+  footPoint.set(x, 0.6, z).project(cameras[cameraId])
   const px = Math.min(63, Math.max(0, Math.round((footPoint.x * 0.5 + 0.5) * 63)))
   const py = Math.min(35, Math.max(0, Math.round((0.5 - footPoint.y * 0.5) * 35)))
   // A few cells around the feet: in a picture with real light and shadow, one cell can be a single dark gap.
@@ -1659,8 +1751,10 @@ function draw(plateCamera = null) {
   aimHighlight(!plateCamera && !framing && actorVisible)
   if (showsRenderedCharacter()) poseSprite(player, viewer, basis)
   else poseFigure(player)
+  poseOthers(viewer, lightOfOther)
   doorPivot.rotation.y = doorOpen ? DOOR_OPEN_ANGLE : 0
   renderer.render(scene, viewer)
+  hideOthers()
 }
 
 // ---------------------------------------------------------------- game loop
@@ -1790,7 +1884,7 @@ function update(dt) {
   outgoingLeft = Math.max(0, outgoingLeft - dt)
   const walkedFrom = [player.x, player.z]
   if (phase === 'explore') {
-    stepPlayer(player, directionHold.resolve(held, cameraBasis(follow.pose)), dt, doorOpen)
+    stepPlayer(player, directionHold.resolve(held, cameraBasis(follow.pose)), dt, doorOpen, walkableNow())
     updateCamera()
     const leaving = EXIT_KIND === 'door' ? player.z < EXIT_Z : Math.hypot(player.x - DOOR_ANCHOR.x, player.z - DOOR_ANCHOR.z) < EXIT_REACH
     if (!JOURNEY && doorOpen && leaving) {
@@ -1799,19 +1893,20 @@ function update(dt) {
       settleTimer = 0
     }
   } else if (phase === 'finished') {
-    stepPlayer(player, { x: 0, z: 0 }, dt, doorOpen)
+    stepPlayer(player, { x: 0, z: 0 }, dt, doorOpen, walkableNow())
   } else if (phase === 'approach') {
     const walkedFromX = player.x
     const walkedFromZ = player.z
     // Round whatever stands in the way. Straight at the mark would only walk into it.
     if (RELAXED && approachFor !== performing) {
       approachFor = performing
-      approachLegs = findRoute(player, performing.anchor, (x, z) => isWalkable(x, z, doorOpen)) ?? []
+      const walkable = walkableNow()
+      approachLegs = findRoute(player, performing.anchor, (x, z) => walkable(x, z, doorOpen)) ?? []
     }
     while (approachLegs.length > 1 && Math.hypot(player.x - approachLegs[0].x, player.z - approachLegs[0].z) < LEG_REACHED) approachLegs.shift()
     const onAWayThere = RELAXED && approachLegs.length > 1
-    if (onAWayThere) stepToward(player, { ...approachLegs[0], yaw: player.yaw }, dt, doorOpen)
-    let arrived = onAWayThere ? false : stepToward(player, performing.anchor, dt, doorOpen)
+    if (onAWayThere) stepToward(player, { ...approachLegs[0], yaw: player.yaw }, dt, doorOpen, walkableNow())
+    let arrived = onAWayThere ? false : stepToward(player, performing.anchor, dt, doorOpen, walkableNow())
     // The walk to a mark is a straight line, and a thing painted bigger than its block can stand across it.
     stuckFor = Math.hypot(player.x - walkedFromX, player.z - walkedFromZ) < 0.1 * dt && !arrived && Math.hypot(player.x - performing.anchor.x, player.z - performing.anchor.z) > 0.2 ? stuckFor + dt : 0
     if (RELAXED && stuckFor > STUCK_SECONDS) {
@@ -2057,7 +2152,8 @@ function renderSilhouette(cameraId, white, asGuide = false) {
   for (const mesh of solids) {
     mesh.material = shown.has(mesh) ? maskWhite
       : asGuide && mesh === floor ? guideFloor
-      : asGuide && mesh === doorLeaf ? guideDoor
+      // Every way out, not just the first: one painted open shows a dark room beyond, which is neither wall nor floor.
+      : asGuide && (mesh === doorLeaf || wayMarkers.includes(mesh)) ? guideDoor
       : maskBlack
     mesh.visible = true
   }
@@ -2231,21 +2327,26 @@ const OPENING_POSE = { position: [...CAMERAS.a.position], target: OPENING_SHOT.t
 // Every video in the film and the pictures it has to start and end on. Only the door changes the
 // room, and the last shot runs on to black, so it has no picture to end on.
 function filmShots() {
-  const room = { camera: 'a', mark: SPAWN, open: false, note: true }
+  // Who stands in the room once the steps before have been done, in the order they come in this place.
+  const thereAfter = done => new Set(peopleThere(id => done.includes(id)).map(person => person.id))
+  const room = { camera: 'a', mark: SPAWN, open: false, note: true, present: thereAfter([]) }
+  // Close enough in the opening's long lens to show a face is too close for the video model: they walk in as it pulls back.
+  const openingClose = new Set([...room.present].filter(id => !PEOPLE.find(person => person.id === id)?.walksIn))
   return [
-    { clip: 'opening', first: { ...room, pose: OPENING_POSE }, last: { ...room, pose: firstView() } },
+    { clip: 'opening', first: { ...room, pose: OPENING_POSE, present: openingClose }, last: { ...room, pose: firstView() } },
     ...BEATS.filter(beat => beat.clip).map(beat => {
-      const start = { camera: beat.camera, mark: beat.anchor, open: false, note: false, pose: shotFor(beat) }
+      const before = BEATS.slice(0, BEATS.indexOf(beat)).map(earlier => earlier.id)
+      const start = { camera: beat.camera, mark: beat.anchor, open: false, note: false, pose: shotFor(beat), present: thereAfter(before) }
       // The first beat picks up what lies out on its object, so its shot starts with it there and ends with it gone.
       const first = beat === BEATS[0] ? { ...start, note: true } : start
-      // The step a chapter closes on runs on to black, like the last shot of a film.
-      return { clip: beat.clip, first, ...(beat.isEnding ? {} : { last: { ...start, open: Boolean(beat.opensDoor) } }) }
+      // The step a chapter closes on runs on to black, like the last shot of a film. Whoever came in during it is there at its end.
+      return { clip: beat.clip, first, ...(beat.isEnding ? {} : { last: { ...start, open: Boolean(beat.opensDoor), present: thereAfter([...before, beat.id]) } }) }
     }),
-    ...(JOURNEY ? [] : [{ clip: LAST_SHOT.clip, first: { camera: LAST_SHOT.camera, mark: LAST_SHOT.anchor, open: true, note: false, pose: shotFor(LAST_SHOT) } }]),
+    ...(JOURNEY ? [] : [{ clip: LAST_SHOT.clip, first: { camera: LAST_SHOT.camera, mark: LAST_SHOT.anchor, open: true, note: false, pose: shotFor(LAST_SHOT), present: thereAfter(BEATS.map(beat => beat.id)) } }]),
   ]
 }
 
-async function captureFrame(name, { camera, mark, open, note, pose }) {
+async function captureFrame(name, { camera, mark, open, note, pose, present }) {
   const saved = { viewMode, doorOpen, activeCameraId, player, propOnStage }
   viewMode = 'plate'
   doorOpen = open
@@ -2253,10 +2354,12 @@ async function captureFrame(name, { camera, mark, open, note, pose }) {
   player = createPlayer(mark)
   propOnStage = Boolean(STAGE_PROP) && note
   framing = { pose, plateMix: camera === 'b' ? 1 : 0 }
+  othersInFrame = present
   setActorVisible(true)
   draw()
   const dataUrl = canvas.toDataURL('image/png')
   framing = null
+  othersInFrame = null
   ;({ viewMode, doorOpen, activeCameraId, player, propOnStage } = saved)
   setActorVisible(true)
   return save(name, dataUrl)
@@ -2307,6 +2410,8 @@ const JOBS = {
     viewMode = 'plate'
     if (!platesReady()) throw new Error('底图还不齐，拍不了视频首尾帧。')
     if (!hasSprites()) throw new Error('人物序列帧还没有，拍不了视频首尾帧。')
+    const missing = others.filter(other => !other.loaded)
+    if (missing.length) throw new Error(`站在场上的人物还没有抠好的图（${missing.map(other => other.person.file).join('、')}），拍不了视频首尾帧。`)
     for (const shot of filmShots()) await captureClipFrames(shot)
   },
   silhouettes: () => measureSilhouettes(),
@@ -2344,6 +2449,7 @@ if (CAMERAS.a.fixed && !jobId) {
   renderer.setPixelRatio(2)
 }
 await loadSprites()
+await loadOthers()
 await loadProps()
 if (!jobId) await loadClips().catch(error => log(error.message))
 log(viewMode === 'plate' ? '已加载底图。' : '白模模式：可以直接试走。')

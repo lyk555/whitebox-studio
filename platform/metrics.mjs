@@ -108,6 +108,8 @@ const LEAST_PATCH = 20 // Pixels of the 320 wide comparison.
 // and a thin thing is many times its block by a handful of pixels, so it has to be a lot of picture as well.
 const MOST_OVERSIZED = 1.7
 const LEAST_OVERRUN = 200 // Pixels of a full picture.
+const FOOT_SHARE = 0.2 // Of a thing's height in the picture, measured up from its lowest point.
+const FOOT_ROWS = 3 // Of the comparison picture, at least.
 
 // Things painted where another thing belongs: a model can swap two things that overlap in the picture, and everything
 // downstream would then be built on the wrong room. The biggest patch of each thing's colour should have its middle
@@ -133,6 +135,7 @@ export function misplacedThings(pixels, width, height, things, bounds = {}) {
       let sumX = 0
       let sumY = 0
       let [left, right, top, bottom] = [width, 0, height, 0]
+      const rows = new Map() // y → [left, right], to find how wide it is where it stands.
       while (stack.length) {
         const at = stack.pop()
         const x = at % width
@@ -144,6 +147,8 @@ export function misplacedThings(pixels, width, height, things, bounds = {}) {
         right = Math.max(right, x)
         top = Math.min(top, y)
         bottom = Math.max(bottom, y)
+        const row = rows.get(y)
+        if (row) { row[0] = Math.min(row[0], x); row[1] = Math.max(row[1], x) } else rows.set(y, [x, x])
         for (const next of [x > 0 ? at - 1 : -1, x < width - 1 ? at + 1 : -1, at >= width ? at - width : -1, at + width < seen.length ? at + width : -1]) {
           if (next >= 0 && !seen[next] && isIt(next)) {
             seen[next] = 1
@@ -151,7 +156,17 @@ export function misplacedThings(pixels, width, height, things, bounds = {}) {
           }
         }
       }
-      if (count >= LEAST_PATCH && count > (best?.count ?? 0)) best = { count, x: (sumX / count) * scale, y: (sumY / count) * scale, wide: (right - left + 1) * scale, bottom: (bottom + 1) * scale }
+      if (count >= LEAST_PATCH && count > (best?.count ?? 0)) {
+        // Only its foot takes floor: a frame that spreads out overhead, or a lamp's shade, costs none.
+        const footFrom = bottom - Math.max(FOOT_ROWS, Math.round((bottom - top + 1) * FOOT_SHARE)) + 1
+        let [footLeft, footRight] = [width, 0]
+        for (const [y, [rowLeft, rowRight]] of rows) {
+          if (y < footFrom) continue
+          footLeft = Math.min(footLeft, rowLeft)
+          footRight = Math.max(footRight, rowRight)
+        }
+        best = { count, x: (sumX / count) * scale, y: (sumY / count) * scale, wide: (footRight - footLeft + 1) * scale, bottom: (bottom + 1) * scale }
+      }
     }
     if (!best) continue
     const distanceTo = other => Math.hypot(best.x - other.x, best.y - other.y)
@@ -177,7 +192,12 @@ export async function misplacedInPicture(mattePath, things, bounds) {
 // from the things in the room, should look more like the rest of its own side than the other. Measured on finished
 // plates: right room 0.82 to 0.95, usually 0.64 to 0.79 for another room's picture. A rough check: it stops a room
 // that has moved, and says nothing about whether the picture is any good.
-export function roomSplitScore(mask, plate, width, height, patch = FLOOR_PATCH) {
+export const roomSplitScore = (mask, plate, width, height, patch = FLOOR_PATCH) => roomSplit(mask, plate, width, height, patch).score
+
+// The score, and how far apart the picture's wall and floor are in colour. Close together, as when both are the same
+// dark wood, every patch is nearly as like one side as the other, and the score is a toss of a coin: measured from 0.53
+// to 0.77 on rooms in the right place.
+export function roomSplit(mask, plate, width, height, patch = FLOOR_PATCH) {
   const cells = []
   for (let top = 0; top + patch <= height; top += patch) {
     for (let left = 0; left + patch <= width; left += patch) {
@@ -198,19 +218,19 @@ export function roomSplitScore(mask, plate, width, height, patch = FLOOR_PATCH) 
   }
   const floors = cells.filter(cell => cell.isFloor)
   const walls = cells.filter(cell => !cell.isFloor)
-  if (!floors.length || !walls.length) return 1
+  if (!floors.length || !walls.length) return { score: 1, contrast: Infinity }
   const meanOf = list => [0, 1, 2].map(channel => list.reduce((sum, cell) => sum + cell.colour[channel], 0) / list.length)
   const floorMean = meanOf(floors)
   const wallMean = meanOf(walls)
   const gap = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
   const nearerOwn = (list, own, other) => list.filter(cell => gap(cell.colour, own) < gap(cell.colour, other)).length / list.length
-  return (nearerOwn(floors, floorMean, wallMean) + nearerOwn(walls, wallMean, floorMean)) / 2
+  return { score: (nearerOwn(floors, floorMean, wallMean) + nearerOwn(walls, wallMean, floorMean)) / 2, contrast: gap(floorMean, wallMean) }
 }
 
 export async function roomAgreement(maskPath, platePath) {
   const width = 320
   const height = 180
-  return roomSplitScore(await readRaw(maskPath, width, height), await readRaw(platePath, width, height), width, height)
+  return roomSplit(await readRaw(maskPath, width, height), await readRaw(platePath, width, height), width, height)
 }
 
 // Mean absolute difference per channel on a 0–255 scale. Below about 8 is hard to see in a crossfade.

@@ -3,9 +3,10 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ROOT } from './config.mjs'
-import { regionsFor, thingCentres, thingSizes } from './detail.mjs'
-import { DIRECTIONS, facePrompt, filmClips, platePrompts, propPrompt, refinePrompt, standPrompt, walkPrompt } from './prompts.mjs'
+import { onWall, regionsFor, thingCentres, thingSizes } from './detail.mjs'
+import { DIRECTIONS, facePrompt, figurePrompt, filmClips, platePrompts, propPrompt, refinePrompt, standPrompt, walkPrompt } from './prompts.mjs'
 import { shellFrom } from '../runtime/shell.js'
+import { OBJECT_COLOURS } from '../runtime/objectColours.js'
 import { buildStage, wallsFirstCameraSees } from './stage.mjs'
 import { castOnScreen } from './breakdown.mjs'
 import { filmOrder, isWorld } from './world.mjs'
@@ -16,7 +17,7 @@ const stageMemo = new Map()
 // Finding marks walks a simulated player around, so the same scene is only ever worked out once.
 export function stageOf(scene) {
   if (scene.demoStage) return demoStage(scene)
-  const key = JSON.stringify([scene.stage, scene.title, scene.openingLine, scene.endingLine, scene.objects, scene.beats, scene.props, scene.carried, scene.exit, scene.paint, scene.exits, scene.id])
+  const key = JSON.stringify([scene.stage, scene.title, scene.openingLine, scene.endingLine, scene.objects, scene.beats, scene.props, scene.carried, scene.exit, scene.paint, scene.exits, scene.id, scene.onStage])
   if (!stageMemo.has(key)) {
     if (stageMemo.size >= MEMO_LIMIT) stageMemo.delete(stageMemo.keys().next().value)
     stageMemo.set(key, buildStage(scene))
@@ -109,6 +110,16 @@ export function buildGraph(project) {
     inputs: Object.keys(DIRECTIONS).flatMap(direction => [`${dir}/walk_${direction}.mp4`, `${dir}/stand_${direction}.png`]), outputs: spriteFiles, params: { castId: player.id },
   })
 
+  // The others who stand in a room: one picture each, for the game and so for the pictures its videos start from.
+  // Only those a stage found somewhere to stand, so nobody's picture is paid for that would never be seen.
+  const figureFile = id => `cast/${id}/figure_${id}.png`
+  const standing = new Set(project.scenes.flatMap(scene => (scene.onStage?.length ? stageOf(scene).data.people ?? [] : []).map(person => person.id)))
+  for (const person of project.cast.filter(candidate => standing.has(candidate.id) && candidate !== player)) {
+    const green = `cast/${person.id}/figure_green.png`
+    add({ id: `cast:${person.id}:figure`, kind: 'image', resource: 'image', title: '站在场上的样子', lane: `人物 · ${person.name}`, deps: [`cast:${person.id}:face`], inputs: [faceFile(person)], outputs: [green], params: { prompt: figurePrompt(person), references: [faceFile(person)], size: '2048x2048', hint: { kind: 'stand' } } })
+    add({ id: `cast:${person.id}:cutout`, kind: 'cutout', resource: 'local', title: '抠出站姿', lane: `人物 · ${person.name}`, deps: [`cast:${person.id}:figure`], inputs: [green], outputs: [figureFile(person.id)], params: { castId: person.id } })
+  }
+
   // ---------------------------------------------------------------- scenes
   const allClips = []
   for (const scene of project.scenes) {
@@ -143,18 +154,32 @@ export function buildGraph(project) {
       const paintGate = { room: at(mask), ...(camera === 'a' ? noInventedWall : {}) }
       painted(paintId, `${title}（整体）`, deps, references, { gate: paintGate })
       nodes.at(-1).attempts = PAINT_ATTEMPTS
+      // Outside the params, like attempts: how sure the room check has to be is not what the picture is.
+      if (stage.shell.stage.framing === 'close') nodes.at(-1).placesCheckedNext = true
       // Which thing is which. Made from the first painting: repainting a part moves nothing, and laying a part
       // back in needs to know where the thing stops, or its square brings a patch of different floor with it.
       const matteId = `${camera}_matte`
       const matteFile = at(`plate_${matteId}.png`)
       const checksPlaces = stage.shell.stage.framing === 'close'
-      painted(matteId, camera === 'a' ? '分清主机位的物件' : '分清第二机位的物件', [nid(paintId)], [from], { hint: { kind: 'matte', mask: at(mask) }, ...(checksPlaces ? { gate: { things: thingCentres(stage, camera) } } : {}) })
+      // Split out of the picture, not painted over it, so it fits the picture whichever model made it.
+      const labels = stage.blocks.slice(0, OBJECT_COLOURS.length).map(block => block.label)
+      add({
+        id: nid(matteId), kind: 'layers', resource: 'image', title: camera === 'a' ? '分清主机位的物件' : '分清第二机位的物件', lane: plateLane, sceneId: sid, deps: [nid(paintId)], inputs: [from], outputs: [matteFile],
+        params: { prompt: prompts[matteId], references: [from], labels, mask: at(mask), size: '2560x1440', ...(checksPlaces ? { gate: { things: thingCentres(stage, camera) } } : {}) },
+      })
+      // One split is a base and a picture per thing. Each one found wrong costs a new picture and another split.
+      const tries = checksPlaces ? PAINT_ATTEMPTS : 1
+      nodes.at(-1).images = { least: 1 + labels.length, most: tries * (1 + labels.length) + tries - 1 }
+      // Where each thing should be, to tell alike things apart by. Outside the params: the layout reaches this step
+      // through the picture already, and a split already paid for is not made again for it.
+      nodes.at(-1).places = thingCentres(stage, camera)
+      nodes.at(-1).onWall = onWall(stage, camera, new Set((scene.beats ?? []).map(beat => beat.object)))
       if (checksPlaces) {
         // Outside the params, so how a fault is put right has no say in whether the step is up to date.
         const matteNode = nodes.at(-1)
         matteNode.repaint = { prompt: prompts[paintId], references, size: '2560x1440', out: from, gate: paintGate }
         matteNode.thingSizes = thingSizes(stage, camera)
-        matteNode.attempts = PAINT_ATTEMPTS * 2 - 1 // Each try at the colours, and a new picture between them.
+        matteNode.attempts = PAINT_ATTEMPTS
       }
       // After the check, since a thing painted in the wrong place means a new picture for these to start from.
       const regions = regionsFor(stage, camera).map((region, index) => {
@@ -222,11 +247,13 @@ export function buildGraph(project) {
     const clips = filmClips(project, scene, stage)
     const stageProp = stage.data.story.stageProp
     const frameOutputs = clips.flatMap(clip => [at(`frame_${clip.id}_first.png`), ...(clip.hasLast ? [at(`frame_${clip.id}_last.png`)] : [])])
+    // Only this step draws the others, so only its hash hears of them: the guides and the paintings stay as they were.
+    const people = stage.data.people ?? []
     const framesId = add({
       id: nid('frames'), kind: 'browser', resource: 'browser', title: '拍首尾画面', lane: filmLane, sceneId: sid,
-      deps: [nid(tripod ? 'b' : 'b_matte'), ...(tripod ? firstCamera : []), ...(relaxed ? [nid('a_matte'), nid('b_matte')] : []), spritesId, ...propIds],
-      inputs: [...firstCameraFiles, at('plate_b.png'), ...(tripod ? [] : [at('plate_b_empty.png'), at('plate_b_matte.png')]), ...(relaxed ? [at('plate_a_matte.png'), at('plate_b_matte.png')] : []), ...spriteFiles, ...(stageProp ? [at(`plate_prop_${stageProp.item}.png`)] : [])],
-      outputs: frameOutputs, params: { op: 'frames', shape },
+      deps: [nid(tripod ? 'b' : 'b_matte'), ...(tripod ? firstCamera : []), ...(relaxed ? [nid('a_matte'), nid('b_matte')] : []), spritesId, ...propIds, ...people.map(person => `cast:${person.id}:cutout`)],
+      inputs: [...firstCameraFiles, at('plate_b.png'), ...(tripod ? [] : [at('plate_b_empty.png'), at('plate_b_matte.png')]), ...(relaxed ? [at('plate_a_matte.png'), at('plate_b_matte.png')] : []), ...spriteFiles, ...(stageProp ? [at(`plate_prop_${stageProp.item}.png`)] : []), ...people.map(person => figureFile(person.id))],
+      outputs: frameOutputs, params: { op: 'frames', shape: people.length ? { ...shape, people } : shape },
     })
     for (const clip of clips) {
       const faceParts = clip.parts.flatMap((part, index) => part.showsFace ? [index] : [])
@@ -296,7 +323,7 @@ export function cardsFor(project, nodes) {
   for (const person of project.cast) {
     const steps = stepsOf(id => id.startsWith(`cast:${person.id}:`))
     if (!steps.length) continue
-    add({ id: `cast:${person.id}`, section: '人物', title: person.name, note: person.playable ? '定妆照，以及五个方向的走路和站姿' : '定妆照', hero: `cast/${person.id}/plate_face.png`, heroNode: `cast:${person.id}:face`, steps })
+    add({ id: `cast:${person.id}`, section: '人物', title: person.name, note: person.playable ? '定妆照，以及五个方向的走路和站姿' : steps.includes(`cast:${person.id}:cutout`) ? '定妆照，以及站在场上的样子' : '定妆照', hero: `cast/${person.id}/plate_face.png`, heroNode: `cast:${person.id}:face`, steps })
   }
   for (const scene of project.scenes) {
     const prefix = `scene:${scene.id}:`

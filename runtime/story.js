@@ -22,6 +22,9 @@ export const LAST_SHOT = { ...STORY.lastShot, during: STORY.ending }
 export const JOURNEY = STORY.journey ?? null
 export const EXITS = STORY.exits ?? []
 export const SCENE_ID = STORY.sceneId ?? null
+// The others standing in this place: where, and after which step they are there (none says from the start). They stay.
+export const PEOPLE = SCENE.people ?? []
+export const peopleThere = isDone => PEOPLE.filter(person => !person.after || isDone(person.after))
 
 // Where the player has got to comes from outside: this page only ever knows one place, and the story goes on elsewhere.
 function storyOnTheMap(started) {
@@ -34,6 +37,7 @@ function storyOnTheMap(started) {
     get propOnStage() { return false },
     get progress() { return progress },
     get finished() { return storyFinished(JOURNEY, progress) },
+    isDone: id => progress.done.includes(stepKey(SCENE_ID, id)),
     arrived() { progress = arrive(progress, SCENE_ID) },
     // Something the story wants now comes first, then a way that is open, then whatever is not ready yet.
     nearby(x, z) {
@@ -69,6 +73,7 @@ export function createStory(progress = null) {
     get items() { return [...items] },
     // A stage prop lies out until the first beat picks it up.
     get propOnStage() { return reached === 0 },
+    isDone: id => BEATS.findIndex(beat => beat.id === id) < reached && BEATS.some(beat => beat.id === id),
     // What the player could act on from here. The beat that is due wins over one that is not.
     nearby(x, z) {
       const inReach = BEATS

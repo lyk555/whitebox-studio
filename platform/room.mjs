@@ -16,8 +16,9 @@ const SHORT = 240
 const JSON_ONLY = '只输出一个 JSON 对象，不要解释，不要 Markdown 代码块。'
 // Not a limit on how much it may write. A pause to say where things stand, so nothing runs on unseen.
 const STEPS_BEFORE_REPORTING = 40
-const PRICE_PER_SECOND = 0.95
-const PRICE_PER_IMAGE = 0.6
+// Yuan at the sizes made here: 720p video with sound, and pictures of more than 2.6 million pixels.
+const pricePerSecond = model => (/mini/.test(model) ? 0.5 : /fast/.test(model) ? 0.8 : 0.95)
+const pricePerImage = model => (/flash/.test(model) ? 0.12 : 0.6)
 const TEXT_PRICES = { input: 3.2, output: 16 } // Yuan per million tokens, the writing model's lowest band.
 
 const brief = text => { const said = clean(text); return said.length > SHORT ? `${said.slice(0, SHORT)}……` : said }
@@ -138,8 +139,9 @@ export function makingCost(project) {
   try {
     const nodes = buildGraph(withLayouts(project))
     const seconds = nodes.reduce((sum, node) => sum + (node.resource === 'video' ? node.seconds ?? 0 : 0), 0)
-    const images = nodes.filter(node => node.resource === 'image').length
-    return { seconds, images, yuan: Math.round(seconds * PRICE_PER_SECOND + images * PRICE_PER_IMAGE) }
+    const images = nodes.reduce((sum, node) => sum + (node.resource === 'image' ? node.images?.least ?? 1 : 0), 0)
+    const { imageModel, videoModel } = config()
+    return { seconds, images, yuan: Math.round(seconds * pricePerSecond(videoModel) + images * pricePerImage(imageModel)) }
   } catch {
     return null
   }

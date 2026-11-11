@@ -11,6 +11,7 @@ import { askChecked, NOT_A_THING } from './breakdown.mjs'
 import { config, ROOT } from './config.mjs'
 import { FatalError } from './engine.mjs'
 import { linesProblem } from './speech.mjs'
+import { arrivalsIn } from './people.mjs'
 import { readProject, writeProject } from './store.mjs'
 import { anchorsOf, anchorWords, chaptersOf, heldBefore, mapText, outlineText, seenBefore, settleWorld, worldProblems } from './world.mjs'
 
@@ -21,7 +22,7 @@ const SECTION_TRIES = 3
 const LOST_MESSAGES = 8 // Steps of one writer's conversation before it is told to stop thinking and hand in.
 const craft = () => readFileSync(join(ROOT, 'platform', 'craft.md'), 'utf8').replace(/## 钱[\s\S]*$/, '').trim()
 
-const FORM = `这部戏是这样看的：玩家操作主角，在一个个地方之间走动，走到一件件立在地上的大东西前（书桌、炉子、木箱，不是墙和门，也不是桌上的小东西），每走到一件就触发一小段电影镜头，看完再走向下一件。一个地方一屏，从出口走到相连的地方，也可以走回去。玩完也能连成一部片子。别的人物不走动，只在这些镜头里露面，一个镜头里除主角外最多两个人，一个镜头说的话一共不超过 46 个字。观众只能靠旁白和台词知道事情，字要写在画面里给人看的镜头拍不了。`
+const FORM = `这部戏是这样看的：玩家操作主角，在一个个地方之间走动，走到一件件立在地上的大东西前（书桌、炉子、木箱，不是墙和门，也不是桌上的小东西），每走到一件就触发一小段电影镜头，看完再走向下一件。一个地方一屏，从出口走到相连的地方，也可以走回去。玩完也能连成一部片子。别的人物不走动：谁在哪一步露面说话，就从这个地方一开始站在那件东西旁边，玩家一进来就看得到他；也可以是那一步才走进来的。一个镜头里除主角外最多两个人，一个镜头说的话一共不超过 46 个字。观众只能靠旁白和台词知道事情，字要写在画面里给人看的镜头拍不了。`
 const WRITE_WELL = `## 这种短片最容易写坏的地方
 - 整段都是主角一个人翻东西，旁白在解释。观众是来看人和人的。能让人当面说出来、吵出来、瞒出来的，就不要写成主角自己发现。人物当面的台词要占这一段的大头，你来我往好几个回合，一个镜头说不完就分到下一步。主角也不要对着空气说话。
 - 旁白替观众想完了。“他是来探口风的”是替观众下结论；“他走的时候，眼睛一直落在我手边那张纸上”才让观众自己去想。
@@ -597,6 +598,7 @@ ${steps.map((step, index) => `第 ${index + 1} 步，在“${step.place}”：�
       "action": "这次交互的视频内容：分镜头写人物的手怎么碰到这件东西、做了什么、看到了什么，全程不露脸，只有背影、肩膀和手",
       "face": "一个露脸的中近景镜头，写谁在哪、表情和动作。这一步有台词就必须写；没有就留空",
       "face_cast": ["这个露脸镜头里除${player?.name ?? '主角'}外的人物名，和人物表一字不差，最多两个"],
+      "arrives": ["face_cast 里这一步才走进来的人，原本不在这个地方；一开始就在的不写，没有就是空数组"],
       "settle": "可选：露脸镜头之后，回到原来构图之前的一个不露脸的特写",
       "sound": "这段视频的环境声和动作声，人说的话不写这里",
       "gives": ["完成后得到的道具 id，没有就是空数组"],
@@ -610,6 +612,7 @@ ${steps.map((step, index) => `第 ${index + 1} 步，在“${step.place}”：�
 - steps 正好 ${steps.length} 项，和上面的步骤一一对应，顺序不变。
 - 物件必须是一开始就立在地上的完整家具或大件东西，不能是墙、门、窗、地面或人，也不能是另一件东西的一部分（暗格、抽屉、把手），也不能是互动之后才出现的东西。这些都写进它所属那件东西的 action 里。要和人说话，就绑在他身边的一件东西上（酒馆的吧台、办公室的账台）。
 - action 里只有主角的手和背影，不能写别的人物。其他人物只能出现在 face 里。
+- face_cast 里的人物从这个地方一开始就站在这件东西旁边，玩家走进来就看得到他。他要是这一步才来的（推门进来、闯进来），写进 arrives，face 里写他进来。
 - 视频和图片里不能有文字，不要写需要看清字的镜头。
 - props 只列这一段新出现、并且 gives 里用到的道具。`
 }
@@ -640,6 +643,7 @@ export function checkClerkAnswer(answer, { project, steps, held, knownProps }) {
     // Whoever speaks or is written into the shot is in the shot, or their portrait is never shown to the video model.
     const named = [...(Array.isArray(raw.face_cast) ? raw.face_cast.map(clean) : []), ...step.lines.map(line => line.who), ...names.filter(name => face.includes(name))]
     const faceCast = face ? [...new Set(named)].filter(name => name !== player && names.includes(name)) : []
+    const arrives = arrivalsIn(raw.arrives, faceCast)
     if (faceCast.length > 2) faults.push(`${label}的露脸镜头里有 ${faceCast.join('、')}，除主角外最多两个人。`)
     const takes = propIdList(raw.takes)
     const gives = propIdList(raw.gives).filter(id => !inHand.has(id) || takes.includes(id))
@@ -653,7 +657,7 @@ export function checkClerkAnswer(answer, { project, steps, held, knownProps }) {
     }
     return {
       objective: clean(raw.objective), objectName: object, prompt: clean(raw.prompt) || '按 E 查看', tooEarly: clean(raw.too_early), during: step.during, after: step.after,
-      performed: true, action, face, faceCast, settle: face ? clean(raw.settle) : '', sound: clean(raw.sound), ...(step.lines.length ? { lines: step.lines } : {}), gives, takes,
+      performed: true, action, face, faceCast, ...(arrives.length ? { arrives } : {}), settle: face ? clean(raw.settle) : '', sound: clean(raw.sound), ...(step.lines.length ? { lines: step.lines } : {}), gives, takes,
     }
   })
   if (faults.length) throw new Error(faults.join(' '))

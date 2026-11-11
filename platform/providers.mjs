@@ -1,10 +1,12 @@
 // The only place that talks to the models. Two providers with one shape: the real one, and a dry run
 // that makes real files with no calls, so a whole workflow can be proven before anything is paid for.
 import { spawn } from 'node:child_process'
-import { readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { config } from './config.mjs'
 import { FatalError, TransientError } from './engine.mjs'
 import { ffmpeg, writePng } from './ffmpeg.mjs'
+import { replaceFile } from './store.mjs'
 
 const NO_KEY_MESSAGE = '缺少火山方舟 API Key：请在“设置”里填写。'
 const NO_REPLY_SECONDS = 120
@@ -46,7 +48,7 @@ async function download(url, path, signal) {
   if (!response.ok) throw new TransientError(`下载失败：HTTP ${response.status}`)
   // Through a temporary file, so a cut connection cannot leave half a picture that looks finished.
   await writeFile(`${path}.part`, Buffer.from(await response.arrayBuffer()))
-  await rename(`${path}.part`, path)
+  await replaceFile(`${path}.part`, path)
 }
 
 // Streams so that a long answer is not mistaken for a dead connection: only silence stops it.
@@ -142,6 +144,29 @@ async function arkImage({ prompt, references, out, size, signal }) {
   if (!url) throw new FatalError(`图像模型没有返回图片：${JSON.stringify(reply).slice(0, 300)}`)
   await download(url, out, signal)
   return { size: reply.data[0].size, usage: reply.usage }
+}
+
+// One picture split into a base and a cut-out per thing, each with where it sits in the picture. Every pixel stays
+// where it was, which painting a matte does not promise: a cheaper model asked for one draws a new picture.
+async function arkLayers({ image, prompt, dir, signal }) {
+  const reply = await ark('/images/generations', {
+    method: 'POST',
+    signal,
+    body: JSON.stringify({ model: config().imageModel, image: await asDataUrl(image), layer_decomposition: true, size: 'auto', prompt, output_format: 'png', response_format: 'url', watermark: false }),
+  })
+  const items = reply.data ?? []
+  const base = items.find(item => !item.bounding_box)
+  if (!base?.size) throw new FatalError(`图像模型没有返回拆分结果：${JSON.stringify(reply).slice(0, 300)}`)
+  await rm(dir, { recursive: true, force: true })
+  await mkdir(dir, { recursive: true })
+  const layers = []
+  for (const [index, item] of items.entries()) {
+    if (!item.bounding_box?.absolute || !item.url) continue
+    const file = join(dir, `layer_${index}.png`)
+    await download(item.url, file, signal)
+    layers.push({ name: item.name ?? '', z: item.z_index ?? index, box: item.bounding_box.absolute, file })
+  }
+  return { size: base.size, layers, usage: reply.usage }
 }
 
 const REFUSED = /sensitive|safety|privacy|real.?person|审核|敏感|InputImage|InputText|Invalid/i
@@ -342,6 +367,18 @@ async function mockImage({ references, out, size = '2560x1440', hint = {}, signa
   return { size, usage: { dryRun: true } }
 }
 
+// What the whitebox calls furniture, cut out as the first thing: a preview has no real things to tell apart.
+async function mockLayers({ image, mask, labels = [], dir, signal }) {
+  await pause(150, signal)
+  await rm(dir, { recursive: true, force: true })
+  await mkdir(dir, { recursive: true })
+  const [width, height] = [2560, 1440]
+  const file = join(dir, 'layer_1.png')
+  await ffmpeg(['-loglevel', 'error', '-i', image, '-i', mask, '-filter_complex',
+    `[0:v]scale=${width}:${height},format=rgba[picture];[1:v]scale=${width}:${height},format=gray,lut=y='if(gt(val,200),255,0)'[cut];[picture][cut]alphamerge`, '-frames:v', '1', file])
+  return { size: `${width}x${height}`, layers: [{ name: labels[0] ?? '', z: 1, box: [0, 0, width, height], file }], usage: { dryRun: true } }
+}
+
 async function mockVideo({ first, last, references = [], duration, out, hint = {}, signal, setExternal, external, onStatus = () => {} }) {
   if (!external?.taskId) await setExternal({ taskId: `dry-${Date.now()}` })
   onStatus('试运行')
@@ -363,8 +400,8 @@ async function mockVideo({ first, last, references = [], duration, out, hint = {
 }
 
 const PROVIDERS = {
-  ark: { text: arkText, chat: arkChat, image: arkImage, video: arkVideo },
-  mock: { text: null, image: mockImage, video: mockVideo },
+  ark: { text: arkText, chat: arkChat, image: arkImage, layers: arkLayers, video: arkVideo },
+  mock: { text: null, image: mockImage, layers: mockLayers, video: mockVideo },
 }
 
 export const providerFor = project => PROVIDERS[project.provider] ?? PROVIDERS.mock

@@ -1,6 +1,6 @@
 // Every picture and video operation the steps need that is not a model call.
 import { execFile, spawn } from 'node:child_process'
-import { rename } from 'node:fs/promises'
+import { replaceFile } from './store.mjs'
 import { promisify } from 'node:util'
 
 const run = promisify(execFile)
@@ -53,7 +53,7 @@ export async function raiseSound(path) {
   if (gain <= 0.5) return
   const louder = `${path}.louder.mp4`
   await ffmpeg(['-loglevel', 'error', '-i', path, '-c:v', 'copy', '-af', `volume=${gain.toFixed(1)}dB`, '-c:a', 'aac', '-b:a', '160k', louder])
-  await rename(louder, path)
+  await replaceFile(louder, path)
 }
 
 const MAX_LEAD_IN_SECONDS = 2
@@ -66,7 +66,7 @@ export async function dropLeadIn(path) {
   if (!cut || Number(cut[1]) > MAX_LEAD_IN_SECONDS) return
   const trimmed = `${path}.trimmed.mp4`
   await ffmpeg(['-loglevel', 'error', '-ss', cut[1], '-i', path, ...VIDEO_ENCODE, trimmed])
-  await rename(trimmed, path)
+  await replaceFile(trimmed, path)
 }
 
 export async function durationOf(path) {

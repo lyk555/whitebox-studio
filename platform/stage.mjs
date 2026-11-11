@@ -220,6 +220,8 @@ const idsOf = value => [value].flat().filter(Boolean)
 const TALL_THING = 1.6 // Metres. Taller than this and a person cannot be seen past it.
 const TALL_STAYS_BEHIND = 0.45 // Share of the way from the back of the room to the near edge.
 const MOST_HIDDEN = 0.25 // Of a thing the story uses. Also what makes a model take two things for each other.
+// Of anything else. A fireplace 81% behind an armchair was painted on bare wall in 6 of 8 pictures, by both models.
+const MOST_HIDDEN_ANYTHING = 0.5
 
 // How much of a thing's place in the picture is covered by things standing in front of it.
 export function hiddenShare(block, standing, camera) {
@@ -359,6 +361,16 @@ export function buildStage(scene) {
       const hidden = block && hiddenShare(block, standing, shell.CAMERAS.a)
       if (hidden > MOST_HIDDEN) issues.push({ level: 'error', message: `“${block.label}”要用来互动，但有 ${Math.round(hidden * 100)}% 被前面的东西挡住了，玩家看不清。请把它挪到能看全的地方。`, object: block.name })
     }
+    // Nor anything else, much: a model paints what it can barely see where it can see it, so the picture no longer
+    // fits the room. Only a warning, so that rooms already painted this way still run; a new layout is moved for it.
+    const used = new Set((scene.beats ?? []).map(beat => beat.object))
+    for (const block of standing) {
+      const hidden = used.has(block.name) ? 0 : hiddenShare(block, standing, shell.CAMERAS.a)
+      if (hidden <= MOST_HIDDEN_ANYTHING) continue
+      // Against a wall, the hidden thing often cannot move without leaving too narrow a gap, and what is in front can.
+      const inFront = standing.map(other => ({ other, hides: other === block ? 0 : hiddenShare(block, [other], shell.CAMERAS.a) })).filter(({ hides }) => hides > 0).sort((a, b) => b.hides - a.hides)
+      issues.push({ level: 'warning', moves: true, message: `“${block.label}”有 ${Math.round(hidden * 100)}% 被前面的东西挡住了，模型会把它画到看得见的地方，和别的东西换位置。把它或挡住它的东西挪开，让它露出大半。`, object: block.name, inFront: inFront.map(({ other }) => other.name) })
+    }
     // Something tall out in the room stands like a wall across a picture that has only the one view.
     const backOfRoom = shell.room.north + (shell.room.south - shell.room.north) * TALL_STAYS_BEHIND
     for (const block of standing) {
@@ -455,6 +467,18 @@ export function buildStage(scene) {
     ? [openingBlock.center[0], Math.min(openingBlock.center[1] + openingBlock.size[1] / 2, 1.5), openingBlock.center[2]]
     : [...shell.CAMERAS.a.target]
 
+  const people = standPeople(scene, { blocks, standing, walkable, shell, spawn, beats, issues })
+  // The film opens close, through a long lens. A face that size in the picture a video starts from is refused as a real person
+  // (seen on 《雾都码头谜案》: the coal heaver beside the shovels), so whoever would show their face there walks into place while
+  // the camera pulls back, and is in the picture it ends on.
+  const openingLens = { position: shell.CAMERAS.a.position, target: openingTarget, fov: OPENING_FOV }
+  for (const person of people) {
+    const head = pictureBounds({ center: [person.x, PERSON_HEIGHT - 0.125, person.z], size: [0.25, 0.25, 0.25] }, openingLens)
+    const across = head && (head.x0 + head.x1) / 2
+    const down = head && (head.y0 + head.y1) / 2
+    if (head && across >= 0 && across <= PLATE_SIZE[0] && down >= 0 && down <= PLATE_SIZE[1]) person.walksIn = true
+  }
+
   // Whatever gives off light in the picture, so the game's own light and dust can agree with it.
   const glows = (scene.objects ?? []).flatMap(object => {
     const block = byId.get(object.id)
@@ -467,6 +491,7 @@ export function buildStage(scene) {
       ...(scene.paint === 'relaxed' ? { relaxed: true, glows } : {}),
       blocks: blocks.map(({ onTop, onLabel, look, label, archetype, ...block }) => block),
       spawn,
+      ...(people.length ? { people } : {}),
       story: {
         title: scene.title,
         opening: scene.openingLine || '',
@@ -475,7 +500,7 @@ export function buildStage(scene) {
         items,
         carried: carried.length ? carried.map(prop => prop.id) : undefined,
         stageProp,
-        openingShot: { target: openingTarget, fov: 14 },
+        openingShot: { target: openingTarget, fov: OPENING_FOV },
         beats,
         ...(scene.exits ? {
           sceneId: scene.id,
@@ -491,6 +516,81 @@ export function buildStage(scene) {
     shell,
     ok: !issues.some(issue => issue.level === 'error'),
   }
+}
+
+// ---------------------------------------------------------------- the others in the room
+// A person standing, as far as the room is concerned: about a person's size, on the floor.
+const PERSON_SIZE = [0.5, 1.75, 0.35]
+const OPENING_FOV = 14 // Degrees: the long lens the film opens on.
+const PLATE_SIZE = [2560, 1440] // What pictureBounds measures in.
+export const PERSON_HEIGHT = PERSON_SIZE[1]
+const PERSON_CLEAR = 0.9 // Metres from where the player has to stand: a step's mark, the way in, another person.
+const WAY_CLEAR = 1.2 // From a way out, which is walked through and not only stood at.
+const NEAR_THING = 2.5 // Metres. Further than this from their thing, they are not standing by it.
+const FURTHEST_FROM_THING = 5 // Still in the room, rather than not there at all.
+export const personBox = ({ x, z }) => ({ center: [x, PERSON_SIZE[1] / 2, z], size: PERSON_SIZE })
+// Walking is kept this far from a person standing, centre to centre.
+export const PERSON_REACH = 0.3 + PLAYER_RADIUS
+
+// Where each person in the room stands: by their thing, on the side away from where the player does it, so the two face each
+// other. Nothing may stand in front of them, they may not hide what the story uses or a way out, and every mark and way out
+// has to stay reachable around them. Their picture faces left; one standing left of the player is shown mirrored.
+function standPeople(scene, { blocks, standing, walkable, shell, spawn, beats, issues }) {
+  const camera = shell.CAMERAS.a
+  const used = (scene.beats ?? []).map(beat => blocks.find(block => block.name === beat.object)).filter(Boolean)
+  const marks = beats.flatMap(beat => beat.anchor ? [beat.anchor] : [])
+  const ways = shell.EXITS.map(way => ({ anchor: way.anchor, box: { center: [way.x, way.height / 2, way.z], size: [way.width, way.height, 0.1] } }))
+  const placed = []
+  for (const entry of scene.onStage ?? []) {
+    const beat = (scene.beats ?? []).find(candidate => candidate.id === entry.by)
+    const block = beat && blocks.find(candidate => candidate.name === beat.object)
+    if (!block) {
+      issues.push({ level: 'warning', message: `站在场上的人物（${entry.cast}）要站在第 ${entry.by} 步的东西旁边，但这一步或它的东西不在场景里，这个人物不会出现在画面里。` })
+      continue
+    }
+    const mark = beats.find(candidate => candidate.id === entry.by)?.anchor
+    const side = !mark || block.center[0] >= mark.x ? 1 : -1
+    const beside = sign => ({ x: block.center[0] + sign * (block.size[0] / 2 + 0.55), z: block.center[2] + block.size[2] / 4 })
+    const clear = (x, z, others) => others.every(other => Math.hypot(x - other.x, z - other.z) >= PERSON_REACH)
+    const fits = spot => {
+      if (!walkable(spot.x, spot.z, false)) return false
+      if ([...marks, spawn].some(point => Math.hypot(spot.x - point.x, spot.z - point.z) < PERSON_CLEAR)) return false
+      if (ways.some(way => Math.hypot(spot.x - way.anchor.x, spot.z - way.anchor.z) < WAY_CLEAR)) return false
+      if (placed.some(other => Math.hypot(spot.x - other.x, spot.z - other.z) < PERSON_CLEAR)) return false
+      const body = personBox(spot)
+      // Nor in front of each other: two people overlapping read as one.
+      const others = placed.map(personBox)
+      if (cameraSeeing(body, shell) !== 'a' || hiddenShare(body, [...standing, ...others], camera) > 0.1) return false
+      if (others.some(other => hiddenShare(other, [body], camera) > 0.1)) return false
+      if (used.some(thing => hiddenShare(thing, [body], camera) > MOST_HIDDEN)) return false
+      if (ways.some(way => hiddenShare(way.box, [body], camera) > MOST_HIDDEN)) return false
+      // Last, as the slowest: they must not cut off any of the room the story needs.
+      const around = (x, z, open) => walkable(x, z, open) && clear(x, z, [...placed, spot])
+      const reach = floodFrom(spawn, around)
+      return marks.every(reach) && ways.every(way => reach(way.anchor))
+    }
+    // By their thing if there is room there; in a crowded corner, as near to it as there is.
+    let spot = null
+    for (const reach of [NEAR_THING, FURTHEST_FROM_THING]) {
+      for (const start of [beside(side), beside(-side)]) {
+        for (const candidate of spotsAround(start.x, start.z, shell)) {
+          if (Math.hypot(candidate.x - start.x, candidate.z - start.z) > reach) break
+          if (fits(candidate)) {
+            spot = candidate
+            break
+          }
+        }
+        if (spot) break
+      }
+      if (spot) break
+    }
+    if (!spot) {
+      issues.push({ level: 'warning', message: `“${block.label}”旁边站不下人，第 ${entry.by} 步说话的人物不会出现在画面里，只在露脸镜头里出现。`, object: block.name, beat: entry.by })
+      continue
+    }
+    placed.push({ id: entry.cast, x: spot.x, z: spot.z, mirror: spot.x < (mark?.x ?? block.center[0]), ...(entry.after ? { after: entry.after } : {}), file: `figure_${entry.cast}.png` })
+  }
+  return placed
 }
 
 // Which of the side walls the first camera has in its picture, so what it is told to paint matches what it is shown.
@@ -572,7 +672,8 @@ export function placeObjects(objects, performedIds = new Set(), shell = TUNED_SH
   return placed
 }
 
-const errorsIn = (scene, objects) => buildStage({ ...scene, objects }).issues.filter(issue => issue.level === 'error')
+// What a layout is moved for: its errors, and what only warns because rooms already painted that way still run.
+const errorsIn = (scene, objects) => buildStage({ ...scene, objects }).issues.filter(issue => issue.level === 'error' || issue.moves)
 const TRIES_TO_SETTLE = 40
 
 // A place can be free and still have nowhere to stand and film. Objects that have that problem are moved,
@@ -584,9 +685,10 @@ export function settleForFilming(scene, objects) {
   let tries = TRIES_TO_SETTLE
   const stuck = new Set()
   while (errors.length && tries > 0) {
-    const issue = errors.find(({ object }) => object && !stuck.has(object) && !shapeOf(current.find(other => other.id === object))?.onTop)
-    if (!issue) break
-    const object = current.find(other => other.id === issue.object)
+    const movable = name => name && !stuck.has(name) && !shapeOf(current.find(other => other.id === name))?.onTop
+    const name = errors.flatMap(issue => [issue.object, ...(issue.inFront ?? [])]).find(movable)
+    if (!name) break
+    const object = current.find(other => other.id === name)
     const others = current.filter(other => other !== object)
     const taken = [...shell.APPROACHES, ...others.filter(other => !shapeOf(other)?.onTop).map(other => footprintAt(other.x, other.z, shapeOf(other).size))]
     let improved = false

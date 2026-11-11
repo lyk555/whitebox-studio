@@ -164,7 +164,8 @@ test('a thing painted in the wrong place sends its picture back, before anything
   assert.equal('repaint' in matte.params, false, 'how a fault is put right is not part of what the step is')
   for (const node of nodes.filter(candidate => candidate.kind === 'refine')) assert.ok(node.deps.includes('scene:s1:a_matte'), node.id)
   assert.equal(nodes.find(node => node.id === 'scene:s1:a_paint').attempts, 3)
-  assert.equal(matte.attempts, 5)
+  assert.equal(matte.attempts, 3, 'a split is not tried again: what it finds wrong is in the picture')
+  assert.equal(matte.kind, 'layers')
 })
 
 test('an outdoor picture is not asked for a ceiling, and an indoor one still is', () => {

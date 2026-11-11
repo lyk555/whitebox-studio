@@ -2,6 +2,7 @@
 // each place keeps the steps that happen in it, so a place is built, painted and filmed the way it always was.
 import { walkThrough } from '../runtime/journey.js'
 import { MOST_WAYS } from '../runtime/shell.js'
+import { onStageFrom } from './people.mjs'
 
 export const isWorld = project => project?.flow === 'chapters'
 export const chaptersOf = project => project.chapters ?? []
@@ -61,6 +62,8 @@ export function settleWorld(project) {
   for (const scene of project.scenes) {
     scene.props = [...owner].filter(([id, where]) => where === scene.id && pool.has(id)).map(([id]) => pool.get(id))
     scene.carried = [...owner].filter(([id, where]) => where !== scene.id && pool.has(id)).map(([id, where]) => ({ ...pool.get(id), from: where }))
+    // Who stands in the room follows from its steps, so it is worked out again whenever they may have changed.
+    if (project.othersStand) scene.onStage = onStageFrom(project.cast, scene)
   }
   return project
 }

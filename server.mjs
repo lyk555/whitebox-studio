@@ -91,9 +91,12 @@ const playerOf = project => project.cast.find(person => person.playable) ?? proj
 // picture from the experiment this was built on.
 function assetFolders(project, sceneId) {
   const player = playerOf(project)
+  // The others standing in this place. Their pictures are named after them, so nothing of the player's is found there first.
+  const others = project.readonly ? [] : (project.scenes.find(scene => scene.id === sceneId)?.onStage ?? []).map(entry => castDir(project.id, entry.cast))
   return [
     project.readonly ? null : sceneDir(project.id, sceneId),
     project.readonly || !player ? null : castDir(project.id, player.id),
+    ...others,
     project.assetsFrom ?? null,
   ].filter(Boolean)
 }
@@ -520,7 +523,8 @@ const server = createServer(async (req, res) => {
     if (pathname === '/api/projects' && req.method === 'POST') {
       const { title, story } = await readJson(req)
       // Real generation by default when a key is there; every paid run still asks first.
-      return sendJson(res, 201, await createProject({ title, story, flow: 'chapters', chapters: [], provider: publicSettings().hasKey ? 'ark' : 'mock' }))
+      // The others stand in the rooms they talk in (platform/people.mjs). Stories made before this keep their films as they were.
+      return sendJson(res, 201, await createProject({ title, story, flow: 'chapters', chapters: [], othersStand: true, provider: publicSettings().hasKey ? 'ark' : 'mock' }))
     }
     const projectRoute = pathname.match(/^\/api\/projects\/([a-z0-9_-]+)(?:\/(.*))?$/)
     if (projectRoute) return await routeProject(req, res, projectRoute[1], projectRoute[2] ?? '')

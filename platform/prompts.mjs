@@ -2,9 +2,12 @@
 // each sentence here is in answer to something a model actually got wrong.
 import { plateSees } from '../runtime/followCamera.js'
 import { OBJECT_COLOURS } from '../runtime/objectColours.js'
+import { pictureBounds } from './detail.mjs'
 import { speechSeconds } from './speech.mjs'
-import { ARCHETYPES, wallsFirstCameraSees } from './stage.mjs'
+import { inPicture } from './people.mjs'
+import { ARCHETYPES, personBox, wallsFirstCameraSees } from './stage.mjs'
 
+const [PLATE_WIDTH, PLATE_HEIGHT] = [2560, 1440]
 const NO_PEOPLE = '画面中不得出现任何人物、文字、水印或界面。'
 const KEEP_LAYOUT = '严格保持白模的相机位置、透视和构图。不得增加、移动或删除任何物体，不得改变房间结构。白模只是粗略的体块，请把每个物体画成真实的东西，加上合理的细节和材质，但外轮廓不能变。'
 // What this space calls its parts. A street has no skirting, and telling a model about one puts one there.
@@ -147,18 +150,41 @@ function loosePrompts(project, scene, stage) {
   const way = scene.exits ? waysInPicture(scene, shell) : isDoor
     ? `${backEdge}${side}一扇关闭的${exit.name}，门的位置和大小与图1的深色区域一致，是一扇真正的门，有门框和把手。`
     : `${backEdge}${side}是${exit.name || '出口'}，人从这里走出去，通向${exit.beyond || '别处'}。`
-  // Each thing in its own flat colour, in the order the game reads them. Past the last colour they are simply left out.
-  const colouring = blocks.flatMap((block, index) => (OBJECT_COLOURS[index] ? [`${block.label}涂成${OBJECT_COLOURS[index].name}（${OBJECT_COLOURS[index].hex}）`] : [])).join('；')
-  const matte = () => `图1是一张完成的场景画面。把它画成一张分割图：相机和构图完全不变，每件东西的轮廓必须紧贴它在图1中实际画出来的样子，一个像素都不要偏。${colouring}。放在某件东西上面的小物件，算作那件东西的一部分。其余的一切都涂成纯绿色（#00FF00）：${wallsAndFloor}、墙上的装饰、壁灯、挂画、窗、${isDoor ? '门' : '出口'}、以及所有影子。每一块都是完全均匀的单一颜色，没有纹理、光影、渐变和描边。图1里看不到的东西就不要画，绝不能新增任何东西。物体的腿之间、靠背和扶手之间露出来的墙和地板也要涂成绿色。不得出现文字或水印。`
+  // Each thing cut out under its own name, in the order the game reads them. Past the last colour they are left out.
+  const labels = blocks.slice(0, OBJECT_COLOURS.length).map(block => block.label)
+  // A way out is not a thing, and nor is the building overhead: split off with a thing next to them, they make it look
+  // twice its size.
+  const waysOut = scene.exits ? scene.exits.map(way => way.name) : [exit.name || (isDoor ? '门' : '出口')]
+  const keptInBase = `${wallsAndFloor}、${shell.kind === 'outdoor' ? '天空、远处的建筑、地上的痕迹' : '天花、窗、壁灯、挂画、地毯'}、头顶的梁架和棚顶，以及${waysOut.join('、')}`
+  // Where each standing thing is in this camera's picture of the whitebox, in thousandths, as the models take a box.
+  const boxesIn = camera => blocks.flatMap(block => {
+    const bounds = block.onTop ? null : pictureBounds(block, shell.CAMERAS[camera])
+    if (!bounds) return []
+    const share = (value, size) => Math.round(Math.min(Math.max(value / size, 0), 1) * 1000)
+    return [`${block.label}<bbox>${share(bounds.x0, PLATE_WIDTH)} ${share(bounds.y0, PLATE_HEIGHT)} ${share(bounds.x1, PLATE_WIDTH)} ${share(bounds.y1, PLATE_HEIGHT)}</bbox>`]
+  })
+  // Named only, a thing can be confused with what it is named after: a pier's steel frame came back as the pier in the
+  // distance. Where to look settles it, and it is told the picture may differ, so a thing moved is still found where it is.
+  const matte = camera => {
+    const boxes = shell.stage.framing === 'close' ? boxesIn(camera) : []
+    return `拆出画面里的这些东西，每件一个图层，图层名用这里给的名字，一字不改：${labels.join('、')}。画面里没有的就跳过，不要新画。${boxes.length ? `它们在布局草模里大致的位置（千分比坐标，依次是左上角和右下角）：${boxes.join('；')}。画出来的位置可能有偏差，以画面里实际的东西为准。` : ''}${keptInBase}都不是这些东西，留在底图里，不要拆进任何图层。`
+  }
+  // Words alone left a model free to move things about: one moved the fireplace from behind the armchair to bare wall
+  // three times running. A box in the picture is something it keeps to.
+  const placed = camera => {
+    if (shell.stage.framing !== 'close') return ''
+    const boxes = boxesIn(camera)
+    return boxes.length ? `每件东西在画面里的位置框（千分比坐标，依次是左上角和右下角）：${boxes.join('；')}。每件东西必须正好画在自己的框里，不得超出，也不得和别的东西换位置；框重叠的地方，近处的东西挡住远处的。` : ''
+  }
   return {
     // What only shows at the edge of this picture still has to be painted as what it is, or the model makes
     // it into whatever it was last told about, and the second camera then shows something else there.
-    a_paint: `图1是这个场景的布局草模，只用来确定相机、透视、墙和地面的位置，以及每件东西大致在哪、有多大。把它画成一张精致的电影美术成品。东西一一对应：${blockList(fromA, shell)}。${fromB.length ? `画面边缘会露出这些东西的一部分，也要照此来画：${blockList(fromB, shell)}。` : ''}${way}相机、透视和墙地交线必须与图1一致。${whatCanBeSeen(shell)}${LOOSE_FORM}${keepsWays}${dressing}${brief}${LOOSE_FINISH}${noWriting}${NO_PEOPLE}`,
+    a_paint: `图1是这个场景的布局草模，只用来确定相机、透视、墙和地面的位置，以及每件东西大致在哪、有多大。把它画成一张精致的电影美术成品。东西一一对应：${blockList(fromA, shell)}。${fromB.length ? `画面边缘会露出这些东西的一部分，也要照此来画：${blockList(fromB, shell)}。` : ''}${way}相机、透视和墙地交线必须与图1一致。${whatCanBeSeen(shell)}${LOOSE_FORM}${keepsWays}${placed('a')}${dressing}${brief}${LOOSE_FINISH}${noWriting}${NO_PEOPLE}`,
     // Not shown the first camera's finished picture: a model given that copies its composition, and paints the
     // first camera's view all over again. The draft already carries that picture's colours and materials.
-    b_paint: `图1是这个地方从第二个机位看到的草稿。视角、构图和每件东西的位置都是准确的，必须严格保持这个视角，不得改成别的机位。草稿里有颜色的部分来自同一个地方的另一张成品，材质、颜色和光线都以它为准，里面的拉伸、破碎和错位只是草稿的痕迹，要按真实物件重新画清楚。灰色部分是还没画的${wallsAndFloor}，要按旁边的样子画完。这个机位能看到：${blockList(blocks, shell)}。图2是这个机位的分区图，每件东西都必须画在图2中它那块白色的位置上，不得左右挪动，也不得缩小到只占其中一部分，每块白色里只有一件东西，不得多画一盏灯或一件家具。${isDoor && !plateSees(shell.CAMERAS.b, [shell.DOOR.x, 1, shell.DOOR.z]) ? `这个机位看不到${exit.name}，任何一面墙上都不得画门。` : ''}${LOOSE_FORM}${dressing}把整张图重新画成一张完整、清晰、连贯的成品，就像站在这里用另一个机位实拍的一样。${brief}${LOOSE_FINISH}${noWriting}${NO_PEOPLE}`,
-    a_matte: matte(),
-    b_matte: matte(),
+    b_paint: `图1是这个地方从第二个机位看到的草稿。视角、构图和每件东西的位置都是准确的，必须严格保持这个视角，不得改成别的机位。草稿里有颜色的部分来自同一个地方的另一张成品，材质、颜色和光线都以它为准，里面的拉伸、破碎和错位只是草稿的痕迹，要按真实物件重新画清楚。灰色部分是还没画的${wallsAndFloor}，要按旁边的样子画完。这个机位能看到：${blockList(blocks, shell)}。图2是这个机位的分区图，每件东西都必须画在图2中它那块白色的位置上，不得左右挪动，也不得缩小到只占其中一部分，每块白色里只有一件东西，不得多画一盏灯或一件家具。${placed('b')}${isDoor && !plateSees(shell.CAMERAS.b, [shell.DOOR.x, 1, shell.DOOR.z]) ? `这个机位看不到${exit.name}，任何一面墙上都不得画门。` : ''}${LOOSE_FORM}${dressing}把整张图重新画成一张完整、清晰、连贯的成品，就像站在这里用另一个机位实拍的一样。${brief}${LOOSE_FINISH}${noWriting}${NO_PEOPLE}`,
+    a_matte: matte('a'),
+    b_matte: matte('b'),
   }
 }
 
@@ -183,6 +209,10 @@ export const DIRECTIONS = {
 const GREEN_SCREEN = '绿幕抠像素材：背景必须和图片2一样，是完全均匀的亮绿色（#00FF00）平面，从上到下同一种颜色。不是青色，不是蓝绿色，不是摄影棚；没有地面线、墙角、影子或渐变。'
 
 export const walkPrompt = (person, direction, hasFeet) => `${GREEN_SCREEN}图片1是这位人物的定妆照，脸和发型必须与图片1完全相同，但不要照搬图片1的灰色背景。人物穿着：${person.costume}。${hasFeet ? '图片3是这双鞋，颜色和款式必须与图片3完全相同，从任何方向看都是这个颜色。' : ''}固定机位，镜头完全不动，相机略高于人物，约 15 度俯视。人物全身入镜，占画面高度约八成，头顶和脚下都留有一点空白，始终在画面正中。人物在原地匀速自然行走，像在跑步机上：从第一帧起就在走，不停顿；步幅自然，双腿交替迈步，膝盖自然弯曲，脚跟先着地；双臂前后自然摆动，衣摆随步伐摆动；每一步的节奏完全相同，约一秒走两步。人物始终${DIRECTIONS[direction]}，不转身，不发生任何位移。人物身上不得有绿色。${GREEN_SCREEN}光线柔和均匀。写实电影质感。单一连续镜头，不得出现文字或水印。`
+
+// Someone else standing in the room, for the game: one still picture, turned towards whoever comes up to them from the left.
+// Made from the portrait like the walk, so it is the same face the video model is shown in the shots with their face.
+export const figurePrompt = person => `${GREEN_SCREEN}图片1是这位人物的定妆照，脸和发型必须与图片1完全相同，但不要照搬图片1的灰色背景。人物穿着：${person.costume}。人物在原地静止站立，身体朝画面左方转约 45 度，看得到正面和一点左侧身，放松自然：双脚平放在地上，双臂自然下垂，手里不拿东西。全身入镜，占画面高度约八成，头顶和脚下都留有一点空白，在画面正中。相机略高于人物，约 15 度俯视。人物身上不得有绿色。光线柔和均匀，写实电影质感。不得出现文字或水印。`
 
 export const standPrompt = () => '图1是这位人物走路时的样子。画同一个人，脸、发型、服装、鞋子和配色都完全不变，相机角度、人物朝向和人物在画面中的大小也都不变。人物静止站立，放松自然：身体挺直，双脚并拢平放在地上，双腿伸直，双臂自然下垂，没有任何迈步或摆臂的动作。背景是完全均匀的亮绿色（#00FF00），没有地面线、影子或渐变。全身入镜。不得出现文字或水印。'
 
@@ -217,30 +247,54 @@ function facesLine(people, hasPlace = true) {
 
 const withSound = (text, sound) => `${text}${sound ? `声音：${sound}。` : ''}`
 
+// Others standing in the pictures a shot is pinned to. Said only when someone is there, so a shot with nobody else stays as it was.
+// Pushed in close, a face the model has no portrait for turns into someone else (seen on 《雾都码头谜案》: the coal heaver aged
+// thirty years), so with others in the picture the camera stays back, where faces are too small to change.
+const KEEPS_WIDE = '第一帧是这个地方的固定全景，人物很小。镜头只缓慢推近一点点，始终是看得到所有人全身的全景，人物一直很小，看不清脸。画面里只有一个主角，不要出现第一人称视角的手。'
+const standingThere = people => people.map(person => `${person.name}（${person.costume}），站在${person.where}`).join('；')
+const othersIn = (people, where) => people.length ? `${where}里还有${standingThere(people)}。他们一直站在原地，不走开，可以转头看向主角，外貌和服装全程不变。` : ''
+const comeIn = (first, last) => {
+  const arriving = last.filter(person => !first.includes(person))
+  return arriving.length ? `尾帧里${standingThere(arriving)}，是这时走进来的。` : ''
+}
+const ONLY_THESE = '不得出现别的地方、家具或人物。'
+const onlyThose = (text, people) => people.length ? text.replace(ONLY_THESE, '不得出现别的地方或家具，除了这里说到的这些人，不得出现别的人物。') : text
+const CLOSE_ON_HANDS = '特写里只拍手和东西，不拍别人的脸。'
+// With several others in the room, a shot free at its end loses track of which small figure is the player, and brings in a second
+// one close to the camera (seen on 《雾都码头谜案》: five people in a warehouse of four). So it is told how many there are, and which.
+const CROWD = 2
+const whoLeads = (lead, count) => lead ? `画面里一共${count}个人。${lead.name}是第一帧里${lead.where}背对镜头、穿${lead.costume}的那一个，就是他走过去做这些动作；镜头前不要再出现另一个人，从头到尾都是这${count}个人。` : ''
+const BESIDE = 1.3 // Metres past a thing's edge that still reads as standing beside it.
+
 // A shot that shows a face cannot also be pinned to frames: the video model allows one or the other.
 // So the shots that join the game are pinned and show no face, the shot with the face is made from
 // the portrait, and they meet on a cut, as shots do.
 // With the fixed view, the place a face shot refers to is the painted picture with nobody in it (facePlate), since a
 // model shown a frame with the person in it paints them a second time. null means the shot is somewhere no picture shows.
-function partsOf({ action, face, settle, sound, people, lines = [], landsOnEnd, fixedView = false, closeUp = false, facePlate, fadesOut = false }) {
+function partsOf({ action, face, settle, sound, people, lines = [], landsOnEnd, fixedView = false, closeUp = false, facePlate, fadesOut = false, others = { first: [], last: [] }, lead = null }) {
   const pinnedEnd = landsOnEnd ? LANDS_ON_LAST_FRAME : ''
-  const look = fixedView ? litFilmLook : filmLook
-  const opening = closeUp ? FROM_WHOLE_ROOM : ''
+  const lookOf = fixedView ? litFilmLook : filmLook
+  const anyone = [...new Set([...others.first, ...others.last])]
+  // The face shot is made from portraits and shows whoever it says, so only the shots pinned to the game are told who stands there.
+  const look = () => onlyThose(lookOf(), anyone)
+  const opening = closeUp ? (others.first.length ? KEEPS_WIDE : FROM_WHOLE_ROOM) : ''
+  const noFace = anyone.length ? `${people[0].name}${NO_FACE.replace('人物', '')}` : NO_FACE
+  const standing = othersIn(others.first, '第一帧') + comeIn(others.first, others.last)
   if (!face) {
-    return [{ duration: 10, landsOnEnd, text: withSound(`电影短片。从第一帧开始。${opening}${action}`, sound) + NO_FACE + (fadesOut ? FADES_TO_BLACK : '') + pinnedEnd + look() }]
+    return [{ duration: 10, landsOnEnd, text: withSound(`电影短片。从第一帧开始。${opening}${action}`, sound) + standing + noFace + (fadesOut ? FADES_TO_BLACK : '') + pinnedEnd + look() }]
   }
   const faceShot = fixedView
     ? { duration: 4, showsFace: true, people, facePlate, text: withSound(`电影镜头：${face}`, sound) + facesLine(people, facePlate !== null) + ONE_OF_EACH + (facePlate === null ? outsideLook(action) : faceLook()) }
-    : { duration: 4, showsFace: true, people, text: withSound(`电影镜头：${face}`, sound) + facesLine(people) + look() }
+    : { duration: 4, showsFace: true, people, text: withSound(`电影镜头：${face}`, sound) + facesLine(people) + lookOf() }
   const parts = [
-    { duration: 5, text: withSound(`电影短片，从第一帧开始。${opening}${action}`, sound) + NO_FACE + look() },
+    { duration: 5, text: withSound(`电影短片，从第一帧开始。${opening}${action}`, sound) + othersIn(others.first, '第一帧') + whoLeads(others.first.length >= CROWD && lead, others.first.length + 1) + noFace + onlyThose(lookOf(), others.first) },
     lines.length
       ? { ...faceShot, duration: speechSeconds(lines), lines, text: linesToSay(lines, people) + faceShot.text.replace(ONE_OF_EACH, TALKING_FACES).replace(FILM_SOUND, TALKING_SOUND) }
       : faceShot,
   ]
   if (fadesOut) parts.at(-1).text = `${FADES_TO_BLACK}${parts.at(-1).text}`
   if (landsOnEnd) {
-    parts.push({ duration: 4, landsOnEnd: true, opensOnCut: true, text: withSound(`电影短片。从第一帧开始，切到特写：${settle || '手收回来。'}然后切到给定尾帧的构图，人物背对镜头站定。`, sound) + NO_FACE + pinnedEnd + look() })
+    parts.push({ duration: 4, landsOnEnd: true, opensOnCut: true, text: withSound(`电影短片。从第一帧开始，切到特写：${settle || '手收回来。'}然后切到给定尾帧的构图，人物背对镜头站定。`, sound) + standing + (anyone.length ? CLOSE_ON_HANDS : '') + noFace + pinnedEnd + look() })
   }
   return parts
 }
@@ -253,9 +307,39 @@ export function filmClips(project, scene, stage) {
     return [player, ...named.filter(person => person !== player)]
   }
   const fixedView = Boolean(stage.shell.CAMERAS.a.fixed)
+  // Who else is in the game's pictures a clip starts and ends on: only those the stage found somewhere to stand.
+  const standing = new Map((stage.data.people ?? []).map(person => [person.id, person]))
+  const seenAt = inPicture(scene)
+  // Where they are in the picture, as the frame shows them. Their thing is named only when they really are beside it: told
+  // "by the armchair" of someone a few metres off, a model walks them over to it.
+  const whereIs = (spot, beat) => {
+    const bounds = pictureBounds(personBox(spot), stage.shell.CAMERAS.a)
+    const across = bounds ? (bounds.x0 + bounds.x1) / 2 / PLATE_WIDTH : 0.5
+    const side = across < 0.2 ? '画面最左边' : across < 0.4 ? '画面左侧' : across < 0.6 ? '画面中间' : across < 0.8 ? '画面右侧' : '画面最右边'
+    const block = stage.blocks.find(candidate => candidate.name === beat?.object)
+    const beside = block && Math.hypot(spot.x - block.center[0], spot.z - block.center[2]) <= Math.max(block.size[0], block.size[2]) / 2 + BESIDE
+    return beside ? `${side}的${beat.objectName}旁` : side
+  }
+  // The player where a step's shot starts, said the same way as the others.
+  const leadAt = beatId => {
+    const mark = stage.data.story.beats.find(entry => entry.id === beatId)?.anchor
+    return mark ? { name: player.name, costume: player.costume, where: whereIs(mark, null) } : null
+  }
+  const othersAt = clipId => {
+    const described = entries => entries.filter(entry => standing.has(entry.cast)).flatMap(entry => {
+      const person = project.cast.find(candidate => candidate.id === entry.cast)
+      const beat = scene.beats.find(candidate => candidate.id === entry.by)
+      return person ? [{ name: person.name, costume: person.costume, where: whereIs(standing.get(entry.cast), beat) }] : []
+    })
+    const { first, last } = seenAt(clipId)
+    // The opening starts too close for anyone whose face would show (stage.mjs): they walk in while it pulls back.
+    const firstPeople = described(clipId === 'opening' ? first.filter(entry => !standing.get(entry.cast)?.walksIn) : first)
+    // The same person on both ends is the same entry, so arrivals can be told by who is new.
+    return { first: firstPeople, last: described(last).map(person => firstPeople.find(other => other.name === person.name) ?? person) }
+  }
   const clips = [{
     id: 'opening', title: '开场',
-    parts: partsOf({ action: `${scene.film.opening.action}一位人物（${player.costume}）走到尾帧的位置停下，背对镜头。`, sound: scene.film.opening.sound, people: [player], landsOnEnd: true, fixedView }),
+    parts: partsOf({ action: `${scene.film.opening.action}一位人物（${player.costume}）走到尾帧的位置停下，背对镜头。`, sound: scene.film.opening.sound, people: [player], landsOnEnd: true, fixedView, others: othersAt('opening') }),
     hasLast: true,
   }]
   for (const beat of scene.beats) {
@@ -264,7 +348,7 @@ export function filmClips(project, scene, stage) {
     const closes = Boolean(beat.endsChapter)
     clips.push({
       id: beat.id, title: beat.objective,
-      parts: partsOf({ action: beat.action, face: beat.face, settle: beat.settle, sound: beat.sound, people: peopleFor(beat.faceCast ?? []), lines: beat.lines, landsOnEnd: !closes, fixedView, closeUp: fixedView, facePlate: 'plate_a_closed.png', fadesOut: closes }),
+      parts: partsOf({ action: beat.action, face: beat.face, settle: beat.settle, sound: beat.sound, people: peopleFor(beat.faceCast ?? []), lines: beat.lines, landsOnEnd: !closes, fixedView, closeUp: fixedView, facePlate: 'plate_a_closed.png', fadesOut: closes, others: othersAt(beat.id), lead: leadAt(beat.id) }),
       hasLast: !closes,
     })
   }
@@ -274,13 +358,13 @@ export function filmClips(project, scene, stage) {
   if (stage.shell.exit === 'door') {
     clips.push({
       id: 'door', title: scene.exit.objective || '推门',
-      parts: partsOf({ action: scene.film.door?.action || `手推开${scene.exit.name || '那扇门'}，最后回到第一帧的构图，门已打开。`, sound: scene.film.door?.sound, people: [player], landsOnEnd: true, fixedView, closeUp: fixedView }),
+      parts: partsOf({ action: scene.film.door?.action || `手推开${scene.exit.name || '那扇门'}，最后回到第一帧的构图，门已打开。`, sound: scene.film.door?.sound, people: [player], landsOnEnd: true, fixedView, closeUp: fixedView, others: othersAt('door') }),
       hasLast: true,
     })
   }
   clips.push({
     id: 'ending', title: '结尾',
-    parts: partsOf({ action: scene.film.ending.action, face: scene.film.ending.face || '人物侧脸的特写，然后画面慢慢暗下去，直到全黑，所有声音也随之消失。', sound: scene.film.ending.sound, people: peopleFor(scene.film.ending.faceCast ?? []), lines: scene.film.ending.lines, landsOnEnd: false, fixedView, facePlate: stage.shell.exit === 'door' ? null : 'plate_a_open.png' }),
+    parts: partsOf({ action: scene.film.ending.action, face: scene.film.ending.face || '人物侧脸的特写，然后画面慢慢暗下去，直到全黑，所有声音也随之消失。', sound: scene.film.ending.sound, people: peopleFor(scene.film.ending.faceCast ?? []), lines: scene.film.ending.lines, landsOnEnd: false, fixedView, facePlate: stage.shell.exit === 'door' ? null : 'plate_a_open.png', others: othersAt('ending') }),
     hasLast: false,
   })
   return clips

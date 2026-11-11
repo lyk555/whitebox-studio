@@ -4,6 +4,7 @@ import { FatalError } from './engine.mjs'
 import { CLOSE_LIMITS, closeStage } from '../runtime/shell.js'
 import { PART_RULES, shapeFromParts } from './shapes.mjs'
 import { linesProblem, spokenLines } from './speech.mjs'
+import { arrivalsIn } from './people.mjs'
 import { isWorld, outlineText } from './world.mjs'
 import { ARCHETYPES, buildStage, closeSpots, MIN_PASSAGE, placeObjects, repeatedLayout, settleForFilming, shapeOf, shellFor, SLOT_ORDER, SLOTS } from './stage.mjs'
 
@@ -450,10 +451,14 @@ function checkScenes(answer) {
 }
 
 // A beat as it is kept, apart from what it hands over and uses up.
-export const beatFromAnswer = beat => ({
-  objective: clean(beat.objective), objectName: clean(beat.object), prompt: clean(beat.prompt) || '按 E 查看', tooEarly: clean(beat.too_early), during: clean(beat.during), after: clean(beat.after),
-  performed: true, action: clean(beat.action), face: clean(beat.face), faceCast: Array.isArray(beat.face_cast) ? beat.face_cast.map(clean).filter(Boolean) : [], settle: clean(beat.settle), sound: clean(beat.sound), ...(spokenLines(beat.lines).length ? { lines: spokenLines(beat.lines) } : {}),
-})
+export const beatFromAnswer = beat => {
+  const faceCast = Array.isArray(beat.face_cast) ? beat.face_cast.map(clean).filter(Boolean) : []
+  const arrives = arrivalsIn(beat.arrives, faceCast)
+  return {
+    objective: clean(beat.objective), objectName: clean(beat.object), prompt: clean(beat.prompt) || '按 E 查看', tooEarly: clean(beat.too_early), during: clean(beat.during), after: clean(beat.after),
+    performed: true, action: clean(beat.action), face: clean(beat.face), faceCast, ...(arrives.length ? { arrives } : {}), settle: clean(beat.settle), sound: clean(beat.sound), ...(spokenLines(beat.lines).length ? { lines: spokenLines(beat.lines) } : {}),
+  }
+}
 
 // One scene, given what is already in hand, so a scene can also be written into an existing story.
 // Moves what this scene hands over and uses up in and out of `held`.
@@ -523,7 +528,7 @@ ${scene.exits ? EXITS.map(way => `“${scene.exits.find(other => other.id === wa
 - 前排在房间中部：放矮的、玩家要用的东西，中心 z 大约是 ${rowZ(2.3)}，前沿不超过 ${rowZ(2.9)}。前排和后排之间、前排前面，都是人走的路。
 下面每一条不合格都会退回重摆：
 - 人要走得开：东西之间、东西和${edge[0]}${edge[1]}之间，要么留够 ${MIN_PASSAGE} 米，要么贴在一起不留缝，不能留人只能挤过去的窄缝。越靠近镜头，能走的范围越窄。
-- 玩家要互动的东西要一眼看全，被前面的东西挡住不能超过四分之一：x 方向尽量错开，不要放在别的东西正后方。它朝镜头的一侧要留出至少 1 米站人。
+- 玩家要互动的东西要一眼看全，被前面的东西挡住不能超过四分之一：x 方向尽量错开，不要放在别的东西正后方。它朝镜头的一侧要留出至少 1 米站人。其他东西也不要被挡住一半以上，画的时候模型会把看不全的东西挪到看得见的地方。
 - 高的东西（柜子、书架、树）靠${edge[2]}或两边，不要放在中间挡住后面。房间中部放矮的、玩家要用的东西。
 - 中间要留出能从一边走到另一边的主路。
 - ${exit === 'door' ? '门' : '出口'}也要看得见，不要把东西放在它正前方的视线上，玩家要一眼知道往哪走。`

@@ -124,6 +124,24 @@ test('running something else leaves an earlier failure on the record', async t =
   assert.equal((await statusesOf(project, nodes)).bad, 'failed')
 })
 
+test('a step that repaints what it reads and then fails is not run again by itself', async t => {
+  const { project, put } = await setup(t)
+  await put('paint.png', 'first')
+  const nodes = [{ id: 'matte', kind: 'k', resource: 'local', inputs: ['paint.png'], outputs: ['matte.png'] }]
+  let calls = 0
+  await runner(project, nodes, {
+    // Like the matte check, which paints the picture it reads again before it gives up.
+    matte: async context => {
+      calls++
+      if (calls > 3) cancelRun(project.id) // Otherwise this goes on, and is paid for, until someone stops it.
+      await writeFile(context.path('paint.png'), `repainted ${calls}`)
+      throw new FatalError('画错了')
+    },
+  })()
+  assert.equal(calls, 1)
+  assert.equal((await statusesOf(project, nodes)).matte, 'failed')
+})
+
 test('a passing problem is retried, and a permanent one gives up', async t => {
   const { project } = await setup(t)
   let calls = 0

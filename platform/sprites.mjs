@@ -30,6 +30,39 @@ export function keyFrame(rgba) {
   return out
 }
 
+// One still picture of someone on a green screen, keyed and trimmed to them, so their feet are on the bottom edge, and made no
+// taller than asked. Each pixel kept is the average of those it stands for, by how solid they are, so the edge takes none of the
+// screen's colour. What is already see-through in the picture stays so: keying only judges colour.
+export function cutOutFigure(rgba, width, height, tallest) {
+  const keyed = keyFrame(rgba)
+  for (let at = 3; at < keyed.length; at += 4) keyed[at] = Math.min(keyed[at], rgba[at])
+  const box = measure(keyed, width, height)
+  const scale = Math.min(1, tallest / (box.maxY - box.minY + 1))
+  const outWidth = Math.max(1, Math.round((box.maxX - box.minX + 1) * scale))
+  const outHeight = Math.max(1, Math.round((box.maxY - box.minY + 1) * scale))
+  const pixels = new Uint8ClampedArray(outWidth * outHeight * 4)
+  for (let y = 0; y < outHeight; y++) {
+    for (let x = 0; x < outWidth; x++) {
+      const x0 = box.minX + Math.floor(x / scale)
+      const y0 = box.minY + Math.floor(y / scale)
+      const x1 = Math.max(x0 + 1, Math.min(box.maxX + 1, box.minX + Math.floor((x + 1) / scale)))
+      const y1 = Math.max(y0 + 1, Math.min(box.maxY + 1, box.minY + Math.floor((y + 1) / scale)))
+      const sum = [0, 0, 0]
+      let solid = 0
+      for (let sy = y0; sy < y1; sy++) {
+        for (let sx = x0; sx < x1; sx++) {
+          const at = (sy * width + sx) * 4
+          const alpha = keyed[at + 3] / 255
+          for (let channel = 0; channel < 3; channel++) sum[channel] += keyed[at + channel] * alpha
+          solid += alpha
+        }
+      }
+      if (solid > 0) pixels.set([...sum.map(value => value / solid), (solid / ((x1 - x0) * (y1 - y0))) * 255], (y * outWidth + x) * 4)
+    }
+  }
+  return { pixels, width: outWidth, height: outHeight }
+}
+
 export function measure(frame, width, height) {
   const rows = new Uint32Array(height)
   const columns = new Uint32Array(width)

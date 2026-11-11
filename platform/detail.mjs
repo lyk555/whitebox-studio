@@ -55,6 +55,21 @@ export function thingCentres({ blocks, shell }, cameraId) {
   })
 }
 
+const FLAT = 0.3 // Metres deep, at most.
+const AGAINST = 0.15 // Metres from the back wall, at most.
+
+// Things flat against the back wall that the story does not use: a frame, a board. They take no floor, so wherever
+// they are painted costs no one a way through, and a model often paints them into the wall itself. Then a split asked
+// for one finds something else of that name, such as the pier in the distance for a pier's frame.
+export function onWall({ blocks, shell }, cameraId, used = new Set()) {
+  return blocks.flatMap((block, index) => {
+    if (block.onTop || used.has(block.name) || block.size[2] > FLAT) return []
+    if (block.center[2] - block.size[2] / 2 - shell.room.north > AGAINST) return []
+    const bounds = pictureBounds(block, shell.CAMERAS[cameraId])
+    return bounds ? [{ index, box: [bounds.x0, bounds.y0, bounds.x1, bounds.y1] }] : []
+  })
+}
+
 // How many pixels of a plate each thing's block takes up, by its place in the stage's list.
 export function thingSizes({ blocks, shell }, cameraId) {
   return Object.fromEntries(blocks.flatMap((block, index) => {

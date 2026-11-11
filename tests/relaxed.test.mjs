@@ -4,9 +4,9 @@ import { composeDetails, objectShare, regionsFor } from '../platform/detail.mjs'
 import { OBJECT_COLOURS } from '../runtime/objectColours.js'
 import { boundsFromPaint, footprintOf, isColourMap, labelThings, nearestWalkable, reachableFrom } from '../runtime/paintedThings.js'
 import { buildGraph, stageOf } from '../platform/graph.mjs'
-import { misplacedThings, roomSplitScore } from '../platform/metrics.mjs'
+import { misplacedThings, roomSplit, roomSplitScore } from '../platform/metrics.mjs'
 import { platePrompts } from '../platform/prompts.mjs'
-import { hiddenShare, narrowPassages } from '../platform/stage.mjs'
+import { buildStage, hiddenShare, narrowPassages, settleForFilming } from '../platform/stage.mjs'
 import { figureTint, flicker, shadowFrom } from '../runtime/atmosphere.js'
 import { fillSmallHoles } from '../runtime/draftHoles.js'
 import { createFollowCamera, shotPose, solvePose } from '../runtime/followCamera.js'
@@ -113,7 +113,7 @@ test('the shots wait for the mattes that hide the player', () => {
   const frames = nodeOf(project, 'frames')
   assert.ok(frames.deps.includes('scene:s1:a_matte') && frames.deps.includes('scene:s1:b_matte'))
   assert.ok(frames.inputs.includes('scenes/s1/plate_b_matte.png'))
-  assert.equal(nodeOf(project, 'a_matte').params.hint.kind, 'matte')
+  assert.equal(nodeOf(project, 'a_matte').kind, 'layers')
 })
 
 test('the stage tells the game what glows', () => {
@@ -165,6 +165,16 @@ test('a room that has moved scores lower than one that has not', () => {
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) mask.fill(y < 40 ? 0 : 120, (y * width + x) * 4, (y * width + x) * 4 + 3)
   assert.equal(roomSplitScore(mask, paint(40), width, height), 1)
   assert.ok(roomSplitScore(mask, paint(64), width, height) < 0.8)
+  assert.equal(Math.round(roomSplit(mask, paint(40), width, height).contrast), Math.round(Math.hypot(130, 130, 130)))
+})
+
+// Seen on 《雾都码头谜案》: a watchman's room painted in one dark wood, walls and floor alike, scored 0.53 to 0.55 in the right place.
+test('a close room hands a room check it cannot be sure of to the check of where things are', () => {
+  const place = { table: [-1.3, -1.4], pillar: [-4.4, -3.1], shelf: [0, -3.7], chest: [3, -1.3], couch: [2.4, -3.5], cabinet: [3.95, -3.4] }
+  const paint = nodeOf(projectWith(closeScene(place)), 'a_paint')
+  assert.equal(paint.placesCheckedNext, true)
+  assert.equal('placesCheckedNext' in paint.params, false, 'a finished picture is not painted again for it')
+  assert.equal(nodeOf(projectWith(fixedScene()), 'a_paint').placesCheckedNext, undefined, 'nothing checks a wide room after this')
 })
 
 test('a figure dims in the dark and takes a little of the colour around it', () => {
@@ -253,12 +263,30 @@ test('a fixed view needs one picture: no second camera is painted', () => {
   assert.ok(nodeOf(project, 'frames').deps.includes('scene:s1:b_matte'))
 })
 
-test('each thing gets its own colour in the picture that tells them apart', () => {
+test('each thing is asked for by its own name, in the order its colour is given', () => {
   const scene = fixedScene()
   const stage = stageOf(scene)
   const { a_matte: prompt } = platePrompts(projectWith(scene), scene, stage)
-  stage.blocks.forEach((block, index) => assert.ok(prompt.includes(`${block.label}涂成${OBJECT_COLOURS[index].name}`), block.label))
+  const matte = nodeOf(projectWith(scene), 'a_matte')
+  assert.deepEqual(matte.params.labels, stage.blocks.map(block => block.label))
+  for (const block of stage.blocks) assert.ok(prompt.includes(block.label), block.label)
   assert.ok(stage.blocks.length <= OBJECT_COLOURS.length)
+  assert.deepEqual(matte.images, { least: 1 + stage.blocks.length, most: 1 + stage.blocks.length }, 'a wide room is split once, and not checked')
+})
+
+test('a close room is painted with a box for each standing thing, and a wide one is not', () => {
+  const place = { table: [-1.3, -1.4], pillar: [-4.4, -3.1], shelf: [0, -3.7], chest: [3, -1.3], couch: [2.4, -3.5], cabinet: [3.95, -3.4] }
+  const close = closeScene(place)
+  const stage = stageOf(close)
+  const { a_paint: paint } = platePrompts(projectWith(close), close, stage)
+  const boxes = [...paint.matchAll(/([^：；]+?)<bbox>(\d+) (\d+) (\d+) (\d+)<\/bbox>/g)]
+  assert.deepEqual(boxes.map(box => box[1]), stage.blocks.filter(block => !block.onTop).map(block => block.label))
+  for (const [, label, ...corners] of boxes) {
+    const [left, top, right, bottom] = corners.map(Number)
+    assert.ok(left < right && top < bottom && right <= 1000 && bottom <= 1000, label)
+  }
+  const wide = fixedScene()
+  assert.equal(platePrompts(projectWith(wide), wide, stageOf(wide)).a_paint.includes('<bbox>'), false)
 })
 
 // A little picture for the tests: letters are colours, . is green keyed out, # is a drawn line.
@@ -603,6 +631,16 @@ test('the close room can be walked and filmed as laid out, with room to walk', (
 })
 
 // Seen on 《闭馆之后》: the player squeezed between a pillar and a table, and only found out by playing it.
+// Seen on 《雾都码头谜案》: a fireplace 81% behind an armchair was painted on bare wall, by both image models.
+test('a thing mostly hidden only warns, and a layout moves it or what stands in front of it', () => {
+  const scene = closeScene({ table: [0.6, -1.9], pillar: [-4.4, -3.1], shelf: [0, -3.7], chest: [3, -1.3], couch: [2.4, -3.5], cabinet: [3.95, -3.4] })
+  const stage = buildStage(scene)
+  assert.equal(stage.ok, true, 'a room already painted this way still runs')
+  assert.deepEqual(stage.issues.map(issue => [issue.level, issue.object]), [['warning', 'couch']])
+  assert.ok(stage.issues[0].inFront.includes('table'))
+  assert.deepEqual(buildStage({ ...scene, objects: settleForFilming(scene, scene.objects) }).issues, [])
+})
+
 test('a gap a person only just fits through stops the layout before anything is painted', () => {
   const tight = { table: [-1.7, -1.9], pillar: [-3.4, -1.7], shelf: [0, -3.7], chest: [2.6, -3.3], cabinet: [3.95, -2.7], couch: [2.25, -1.3] }
   const stage = stageOf(closeScene(tight, 4.7))

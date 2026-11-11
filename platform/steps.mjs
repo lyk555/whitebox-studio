@@ -11,21 +11,25 @@ import { composeDetails, objectShare } from './detail.mjs'
 import { floorTakenByWall, meanDifference, misplacedInPicture, outlineAgreement, roomAgreement } from './metrics.mjs'
 import { DIRECTIONS } from './prompts.mjs'
 import { providerFor, readerProvider } from './providers.mjs'
+import { matteFromLayers, sortOutAlike, thingOfLayer } from './layers.mjs'
 import { keepFinishedFile, seatFillFile } from './seat.mjs'
-import { sheetFromVideoFrames } from './sprites.mjs'
+import { cutOutFigure, sheetFromVideoFrames } from './sprites.mjs'
 import { castDir, readProject, replaceFile, sceneDir, writeAtomic, writeProject } from './store.mjs'
 import { anchorsOf, settleWorld } from './world.mjs'
 
 const MIN_ALIGNMENT = 0.65
 const MIN_ROOM_AGREEMENT = 0.6 // Low on purpose: the darker and more dramatic the light, the less walls and floor separate. See roomSplitScore.
+const LEAST_ROOM_CONTRAST = 16 // Wall and floor colour apart, of 0 to 255 a channel. Rooms told apart well measured 35 and up.
 const PLATE_SIZE = [2560, 1440]
 const MAX_FLOOR_TAKEN = 0.02 // Good plates measured 0.000. One with an invented wall, 0.036 with furniture in front of it and 0.107 without.
 const PAINT_ATTEMPTS = 3
+const FIGURE_HEIGHT = 1024 // Pixels, of someone standing in the room. On screen they are a few hundred at most.
 const CHARACTER_HEIGHT_METERS = 1.75
 const SEAM_WARNING = 12
 const GREEN_SCREEN_IMAGE = 'green_screen.png'
 
 const ensureDirFor = path => mkdir(dirname(path), { recursive: true })
+const boxesMeet = (a, b) => a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
 
 // Where a clip of a read-only project lives, which may be outside the project.
 const externalClip = (project, clip) => join(project.assetsFrom, clip.file)
@@ -34,7 +38,9 @@ const externalClip = (project, clip) => join(project.assetsFrom, clip.file)
 async function plateProblem(context, gate, file, attempt) {
   // A preview's picture of colours is not a real one, so it has nothing to say about where things are.
   if (gate.things && context.project.provider !== 'mock') {
-    const wrong = await misplacedInPicture(file, gate.things, context.node.thingSizes)
+    // What lies flat on the back wall takes no floor, so where it was painted costs no one a way through.
+    const onWall = new Set((context.node.onWall ?? []).map(({ index }) => index))
+    const wrong = await misplacedInPicture(file, gate.things.filter(thing => !onWall.has(thing.index)), context.node.thingSizes)
     context.metric('放错位置', wrong.length)
     if (wrong.length) return `模型把东西画错了（${wrong.map(({ label, standsAt, oversized }) => (standsAt ? `${label}画到了${standsAt}的位置` : `${label}画得太大了，占了白模 ${oversized} 倍的宽度，或者伸到了太靠近镜头的地方`)).join('，')}），要重画这张底图`
   }
@@ -46,10 +52,13 @@ async function plateProblem(context, gate, file, attempt) {
   }
   // Nor does its plate have a real wall and floor to tell apart.
   if (gate.room && context.project.provider !== 'mock') {
-    const score = await roomAgreement(context.path(gate.room), file)
+    const { score, contrast } = await roomAgreement(context.path(gate.room), file)
     context.metric('房间结构', Number(score.toFixed(3)))
     context.log(`第 ${attempt} 次：墙和地面还在白模的位置上，分数 ${score.toFixed(3)}（至少 ${MIN_ROOM_AGREEMENT}）`)
-    if (score < MIN_ROOM_AGREEMENT) return `墙和地面跑偏了，分数只有 ${score.toFixed(3)}`
+    // A room moved also moves everything in it, and the split after this finds each thing out of its box.
+    if (score < MIN_ROOM_AGREEMENT && contrast < LEAST_ROOM_CONTRAST && context.node.placesCheckedNext) {
+      context.log(`墙和地面颜色太接近（只差 ${contrast.toFixed(1)}），这个分数说明不了房间有没有跑偏，交给下一步按物件位置核对`)
+    } else if (score < MIN_ROOM_AGREEMENT) return `墙和地面跑偏了，分数只有 ${score.toFixed(3)}`
   }
   if (gate.mask) {
     const taken = await floorTakenByWall(context.path(gate.mask), file)
@@ -178,6 +187,59 @@ const STEPS = {
     await replaceFile(fresh, out)
   },
 
+  // Which thing is which in a finished picture, split out of it by the model rather than painted again, so the
+  // matte sits on the picture exactly. Found in the wrong place, it is the picture that has to be painted again.
+  async layers(context, provider) {
+    const { params } = context.node
+    const out = context.path(context.node.outputs[0])
+    await ensureDirFor(out)
+    const fresh = `${out}.new.png`
+    const work = `${out}.layers`
+    const [width, height] = (params.size ?? '2560x1440').split('x').map(Number)
+    const { repaint } = context.node
+    const attempts = params.gate ? PAINT_ATTEMPTS : 1
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      context.progress(`正在拆分物件（第 ${attempt} 次）`)
+      const split = await provider.layers({ image: context.path(params.references[0]), prompt: params.prompt, labels: params.labels, mask: params.mask ? context.path(params.mask) : undefined, dir: work, signal: context.signal })
+      const [splitWidth, splitHeight] = split.size.split('x').map(Number)
+      const layers = []
+      for (const layer of split.layers) {
+        const index = thingOfLayer(layer.name, params.labels)
+        if (index < 0) {
+          context.log(`多拆出了“${layer.name}”，不是这里的东西，没有用它`)
+          continue
+        }
+        const [left, top, right, bottom] = layer.box.map((value, i) => Math.round(value * (i % 2 ? height / splitHeight : width / splitWidth)))
+        if (right <= left || bottom <= top) continue
+        layers.push({ index, z: layer.z, box: [left, top, right, bottom], pixels: await readRaw(layer.file, right - left, bottom - top) })
+      }
+      await rm(work, { recursive: true, force: true })
+      if (context.node.places) sortOutAlike(layers, params.labels, context.node.places)
+      // Flat on the wall, a thing found nowhere near its own place is something else of that name, not it.
+      for (const { index, box } of context.node.onWall ?? []) {
+        const at = layers.findIndex(layer => layer.index === index)
+        if (at < 0 || boxesMeet(layers[at].box, box)) continue
+        context.log(`第 ${attempt} 次：${params.labels[index]}贴着后墙，在它的位置上没有拆出来，大概画进了墙里；它不占地，不影响走路，分割图里不算它`)
+        layers.splice(at, 1)
+      }
+      const missing = params.labels.filter((_, index) => !layers.some(layer => layer.index === index))
+      if (missing.length) context.log(`第 ${attempt} 次：画面里没有拆出${missing.join('、')}`)
+      context.metric('拆出的物件', layers.length)
+      await writePng(fresh, matteFromLayers(layers, width, height), width, height)
+      if (!params.gate) break
+      const problem = await plateProblem(context, params.gate, fresh, attempt)
+      if (!problem) break
+      if (attempt < attempts && repaint) {
+        context.log(`第 ${attempt} 次：${problem}`)
+        await repaintBase(context, provider, repaint, attempt, problem)
+        continue
+      }
+      await replaceFile(fresh, `${out}.rejected.png`)
+      throw new FatalError(`${attempts > 1 ? `画了 ${attempts} 次都不合格（最后一次：${problem}）` : problem}，已停止，后面的素材都依赖它。被拒的分割图留在 ${context.node.outputs[0]}.rejected.png。`)
+    }
+    await replaceFile(fresh, out)
+  },
+
   async refine(context, provider) {
     const { from, region: { x, y, side }, prompt, size } = context.node.params
     const out = context.path(context.node.outputs[0])
@@ -258,8 +320,9 @@ const STEPS = {
     context.metric('循环接缝', sheet.loopSeam)
     await rm(join(dir, sheet.file), { force: true })
     // Words do not hold the colour of the feet from one direction to the next, so every direction is
-    // shown them, cut from the side-on walk. The cut stops well below the face.
-    await ffmpeg(['-loglevel', 'error', '-ss', '1', '-i', join(dir, `walk_${direction}.mp4`), '-frames:v', '1', '-vf', 'crop=iw:ih*0.34:0:ih*0.66', context.path(context.node.outputs[0])])
+    // shown them, cut from the side-on walk. The cut stops well below the face. Seedance 2.0 mini refuses a
+    // reference wider than 2.5:1, so the strip is a little taller than the feet need.
+    await ffmpeg(['-loglevel', 'error', '-ss', '1', '-i', join(dir, `walk_${direction}.mp4`), '-frames:v', '1', '-vf', 'crop=iw:ih*0.42:0:ih*0.58', context.path(context.node.outputs[0])])
   },
 
   // Standing still has to be a real pose, since any frame of a walk looks like walking.
@@ -272,6 +335,19 @@ const STEPS = {
     const fresh = `${out}.new.png`
     await provider.image({ prompt, references: [reference], out: fresh, size, hint: { kind: 'stand' }, signal: context.signal })
     await replaceFile(fresh, out)
+  },
+
+  // Someone standing in the room, cut out of their green screen and trimmed to them, feet on the bottom edge.
+  async cutout(context) {
+    const [green] = context.node.inputs.map(context.path)
+    const out = context.path(context.node.outputs[0])
+    const side = 2048
+    // Far more than the game ever shows one at, and small enough to load at once.
+    const { pixels, width, height } = cutOutFigure(await readRaw(green, side, side), side, side, FIGURE_HEIGHT)
+    await ensureDirFor(out)
+    await writePng(`${out}.new.png`, pixels, width, height)
+    await replaceFile(`${out}.new.png`, out)
+    context.metric('尺寸', `${width}x${height}`)
   },
 
   // Works only from the videos already on disk, so it never costs a model call.

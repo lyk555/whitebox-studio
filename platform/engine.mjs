@@ -124,8 +124,8 @@ export function planFor(nodes, statuses, targets = null) {
     nodes: list.map(node => node.id),
     calls: {
       text: list.filter(node => node.resource === 'text').length,
-      image: list.reduce((sum, node) => sum + (node.resource === 'image' ? node.attempts ?? 1 : 0), 0),
-      imageMin: list.filter(node => node.resource === 'image').length,
+      image: list.reduce((sum, node) => sum + (node.resource === 'image' ? node.images?.most ?? node.attempts ?? 1 : 0), 0),
+      imageMin: list.reduce((sum, node) => sum + (node.resource === 'image' ? node.images?.least ?? 1 : 0), 0),
       video: list.filter(node => node.resource === 'video').length,
       videoSeconds: list.reduce((sum, node) => sum + (node.resource === 'video' ? node.seconds ?? 0 : 0), 0),
     },
@@ -219,7 +219,9 @@ async function runNode({ run, project, node, state, execute, hash }) {
       }
       const retryable = error instanceof TransientError && attempt < MAX_TRANSIENT_RETRIES
       if (!retryable) {
-        Object.assign(record, { error: error.message, errorHash: hash, progress: null, finishedAt: Date.now() })
+        // Read again, as when it finishes: a step can repaint what it reads before it gives up, and a failure
+        // measured against the inputs it started from looks out of date at once, so it would be run again forever.
+        Object.assign(record, { error: error.message, errorHash: (await inputHash(project, node)) ?? hash, progress: null, finishedAt: Date.now() })
         return
       }
       const wait = run.backoff[Math.min(attempt, run.backoff.length - 1)]

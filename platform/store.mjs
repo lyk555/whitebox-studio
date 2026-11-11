@@ -2,7 +2,7 @@
 // half a project behind.
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, normalize, sep } from 'node:path'
 import { ROOT } from './config.mjs'
 
@@ -17,7 +17,14 @@ export async function replaceFile(from, to) {
       await rename(from, to)
       return
     } catch (error) {
-      if (!LOCKED.has(error.code) || wait > 3200) throw error
+      if (!LOCKED.has(error.code)) throw error
+      // OneDrive was seen holding a new video for minutes while it uploaded it. Reading it is still allowed, so after about
+      // 25 seconds it is copied into place instead, and what is left behind goes if it can.
+      if (wait > 12800) {
+        await copyFile(from, to)
+        await rm(from, { force: true }).catch(() => {})
+        return
+      }
       await new Promise(resolve => setTimeout(resolve, wait))
     }
   }

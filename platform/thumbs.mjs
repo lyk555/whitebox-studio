@@ -2,10 +2,10 @@
 // page shows is a cached thumbnail, named after what it was made from so it can be kept forever.
 import { createHash } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
-import { mkdir, rename } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ffmpeg } from './ffmpeg.mjs'
-import { projectDir } from './store.mjs'
+import { projectDir, replaceFile } from './store.mjs'
 
 const LIMIT = 3
 let active = 0
@@ -38,7 +38,7 @@ export async function thumbnail(projectId, source, { width = 640, at = null, key
     const fresh = `${out}.${randomSuffix()}.${key ? 'png' : 'jpg'}`
     await ffmpeg(['-loglevel', 'error', ...(moment !== null ? ['-ss', String(moment)] : []), '-i', source, '-frames:v', '1',
       '-vf', `${key ? 'chromakey=0x00ff00:0.2:0.06,' : ''}scale=${width}:-2`, ...(key ? [] : ['-q:v', '4']), fresh])
-    await rename(fresh, out)
+    await replaceFile(fresh, out)
     return out
   }).finally(() => making.delete(out))
   making.set(out, job)
