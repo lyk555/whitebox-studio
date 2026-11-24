@@ -10,9 +10,9 @@
 
 ## 预告片
 
-[![《福尔摩斯：榆园命案》预告片](docs/trailer.gif)](docs/trailer.mp4)
+[![《福尔摩斯：榆园命案》预告片](docs/trailer.gif)](https://github.com/lyk555/whitebox-studio/raw/main/docs/trailer.mp4)
 
-《福尔摩斯：榆园命案》是用一段 1674 字的故事生成的互动影游：6 个地方，成片 10 分 36 秒。上面是几个片段，完整的 48 秒预告片在 [docs/trailer.mp4](docs/trailer.mp4)。
+《福尔摩斯：榆园命案》是用一段 1674 字的故事生成的互动影游：6 个地方，成片 10 分 36 秒。上面是几个片段，没有声音。完整的 48 秒预告片带台词和配乐：[下载 trailer.mp4](https://github.com/lyk555/whitebox-studio/raw/main/docs/trailer.mp4)（720p，6.6 MB）。GitHub 不在网页里播放它，所以是下载。
 
 ## 运行
 
