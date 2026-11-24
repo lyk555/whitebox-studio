@@ -76,6 +76,12 @@ function insideProjectOrShared(project, file) {
 const outputsExist = (project, node) => (node.outputs ?? []).every(file => existsSync(insideProject(project.id, file)))
 
 // done | stale | failed | running | waiting (for a step before it) | ready
+// A step whose files still match what it was made from is not done while a step before it is about to make them again: its
+// inputs are about to change. Counted as done, it let what came after start on the old files (seen on 《榆园命案》: the study's
+// frames were taken with the old Lestrade while his new picture was still being painted, and then counted as up to date).
+// A step before it that failed makes nothing new until it is tried again, so it holds nothing up.
+const WILL_CHANGE = new Set(['running', 'ready', 'stale', 'waiting'])
+
 export async function nodeStatuses(project, nodes, state, running = new Set()) {
   const statuses = {}
   const byId = new Map(nodes.map(node => [node.id, node]))
@@ -84,12 +90,13 @@ export async function nodeStatuses(project, nodes, state, running = new Set()) {
     const record = state.nodes[node.id]
     if (running.has(node.id)) return (statuses[node.id] = 'running')
     const hash = await inputHash(project, node)
-    if (hash && record?.hash === hash && record.finished && outputsExist(project, node)) return (statuses[node.id] = 'done')
+    const befores = (node.deps ?? []).map(id => byId.get(id)).filter(Boolean)
+    const beforeStatuses = []
+    for (const before of befores) beforeStatuses.push(await statusOf(before))
+    const heldUp = beforeStatuses.some(status => WILL_CHANGE.has(status))
+    if (!heldUp && hash && record?.hash === hash && record.finished && outputsExist(project, node)) return (statuses[node.id] = 'done')
     if (record?.error && (hash === null || record.errorHash === hash)) return (statuses[node.id] = 'failed')
-    for (const id of node.deps ?? []) {
-      const before = byId.get(id)
-      if (before && await statusOf(before) !== 'done') return (statuses[node.id] = 'waiting')
-    }
+    if (beforeStatuses.some(status => status !== 'done')) return (statuses[node.id] = 'waiting')
     if (hash === null) return (statuses[node.id] = 'waiting')
     return (statuses[node.id] = record?.finished ? 'stale' : 'ready')
   }

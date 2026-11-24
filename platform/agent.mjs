@@ -342,6 +342,7 @@ const EDITS = {
     if (edit.takes !== undefined) writeList(changed, beat, 'takes', propIds(edit.takes), where, '用掉的道具')
     if (Array.isArray(edit.face_cast)) writeList(changed, beat, 'faceCast', edit.face_cast.map(clean).filter(Boolean), where, '露脸镜头里的人物')
     if (Array.isArray(edit.arrives)) writeList(changed, beat, 'arrives', arrivalsIn(edit.arrives, beat.faceCast ?? []), where, '这一步才进来的人物')
+    if (Array.isArray(edit.moves)) writeList(changed, beat, 'moves', edit.moves.map(clean).filter(Boolean), where, '这一步走过来的人物')
     writeLines(changed, beat, edit.lines, where)
   },
 
@@ -688,7 +689,7 @@ const WORLD_EDIT_FORMATS = `{ "op": "meta", "title": "片名", "style": "美术�
 { "op": "link_add", "a": "s1", "b": "s2", "a_exit": { "name": "从 a 看这条路是什么", "kind": "door 或 opening", "at": 0.3, "beyond": "走过去看到什么" }, "b_exit": { "name": "", "kind": "", "at": 0.7, "beyond": "" }, "opens_after": "等哪个锚点之后才通，一开始就通就不写", "locked": "还不通时的一句话", "one_way": false }
 { "op": "link", "from": "s1", "to": "s2", "name": "", "kind": "door 或 opening", "at": 0.5, "beyond": "", "prompt": "", "locked": "", "opens_after": "清空就写空字符串，两头一起改" }
 { "op": "link_remove", "a": "s1", "b": "s2" }
-{ "op": "beat", "scene": "s1", "target": "b1", "objective": "", "object": "换成这个地方的另一件东西时写它的名字", "prompt": "", "too_early": "", "during": "", "after": "", "gives": [], "takes": [], "action": "", "face": "清空就写空字符串", "face_cast": ["露脸镜头里的人物名"], "arrives": ["face_cast 里这一步才走进来的人"], "lines": [{ "who": "人物全名", "says": "说的话，整个镜头不超过 40 个字" }], "settle": "", "sound": "" }
+{ "op": "beat", "scene": "s1", "target": "b1", "objective": "", "object": "换成这个地方的另一件东西时写它的名字", "prompt": "", "too_early": "", "during": "", "after": "", "gives": [], "takes": [], "action": "", "face": "清空就写空字符串", "face_cast": ["露脸镜头里的人物名"], "arrives": ["face_cast 里这一步才走进来的人"], "moves": ["已经在这里、这一步走到这件东西旁边的人"], "lines": [{ "who": "人物全名", "says": "说的话，整个镜头不超过 40 个字" }], "settle": "", "sound": "" }
 { "op": "beat_add", "scene": "s1", "anchor": "a1", "after": "接在这个锚点的哪一步后面，放最前面就留空", "beat": { 格式同 beat，不写 op、scene、target，object 必须是这个地方已有的东西，或者同一次用 set 摆上的 } }
 { "op": "beat_remove", "scene": "s1", "target": "b2" }
 { "op": "beat_move", "scene": "s1", "target": "b2", "anchor": "挪到哪个锚点，不挪就不写", "after": "接在哪一步后面，放最前面就留空" }
@@ -720,7 +721,7 @@ export const EDIT_FORMATS = `{ "op": "meta", "title": "片名", "style": "美术
 { "op": "scene_replace", "target": "s2", "scene": 整场重写，格式同 scene_add 的场景 }
 { "op": "scene_remove", "target": "s2" }
 { "op": "scene_move", "target": "s2", "after": "s1，放最前面就留空" }
-{ "op": "beat", "scene": "s1", "target": "b1", "objective": "", "object": "换成这个地方的另一件东西时写它的名字", "prompt": "", "too_early": "", "during": "", "after": "", "gives": [], "takes": [], "action": "", "face": "清空就写空字符串", "face_cast": ["露脸镜头里的人物名"], "arrives": ["face_cast 里这一步才走进来的人"], "lines": [{ "who": "人物全名", "says": "说的话，整个镜头不超过 40 个字" }], "settle": "", "sound": "" }
+{ "op": "beat", "scene": "s1", "target": "b1", "objective": "", "object": "换成这个地方的另一件东西时写它的名字", "prompt": "", "too_early": "", "during": "", "after": "", "gives": [], "takes": [], "action": "", "face": "清空就写空字符串", "face_cast": ["露脸镜头里的人物名"], "arrives": ["face_cast 里这一步才走进来的人"], "moves": ["已经在这里、这一步走到这件东西旁边的人"], "lines": [{ "who": "人物全名", "says": "说的话，整个镜头不超过 40 个字" }], "settle": "", "sound": "" }
 { "op": "beat_add", "scene": "s1", "after": "b1，放最前面就留空", "beat": { 格式同 beat，不写 op、scene、target，object 必须是这个地方已有的东西，或者同一次用 set 摆上的 } }
 { "op": "beat_remove", "scene": "s1", "target": "b2" }
 { "op": "beat_move", "scene": "s1", "target": "b2", "after": "b1，放最前面就留空" }
@@ -745,7 +746,7 @@ const sayScene = scene => ({
   edges: scene.edges, place: scene.place, mood: scene.mood, opening_line: scene.openingLine, ending_line: scene.endingLine,
   props: scene.props, ...(scene.exits ? {} : { 手里已有的道具: (scene.carried ?? []).map(prop => prop.id) }),
   ...(scene.exits ? { exits: scene.exits.map(exit => ({ to: exit.to, name: exit.name, kind: exit.kind, at: exit.at, beyond: exit.beyond, opens_after: exit.opensAfter, locked: exit.locked })) } : {}),
-  beats: scene.beats.map(beat => ({ id: beat.id, objective: beat.objective, object: beat.objectName, prompt: beat.prompt, too_early: beat.tooEarly, during: beat.during, after: beat.after, gives: propIds(beat.gives), takes: propIds(beat.takes), action: beat.action, face: beat.face, face_cast: beat.faceCast, arrives: beat.arrives ?? [], lines: beat.lines ?? [], settle: beat.settle, sound: beat.sound, ...(beat.ambience ? { ambience: beat.ambience } : {}) })),
+  beats: scene.beats.map(beat => ({ id: beat.id, objective: beat.objective, object: beat.objectName, prompt: beat.prompt, too_early: beat.tooEarly, during: beat.during, after: beat.after, gives: propIds(beat.gives), takes: propIds(beat.takes), action: beat.action, face: beat.face, face_cast: beat.faceCast, arrives: beat.arrives ?? [], moves: beat.moves ?? [], lines: beat.lines ?? [], settle: beat.settle, sound: beat.sound, ...(beat.ambience ? { ambience: beat.ambience } : {}) })),
   ...(scene.exit ? { exit: { name: scene.exit.name, beyond: scene.exit.beyond, objective: scene.exit.objective, prompt: scene.exit.prompt, too_early: scene.exit.tooEarly, during: scene.exit.during, last_objective: scene.exit.lastObjective } } : {}),
   film: scene.film.ending ? (({ faceCast, ...ending }) => ({ ...scene.film, ending: { ...ending, face_cast: faceCast ?? [] } }))(scene.film.ending) : scene.film,
   objects: (scene.objects ?? []).map(object => ({ name: object.name, look: object.look, ...(object.on ? { on: scene.objects.find(other => other.id === object.on)?.name } : { x: object.x, z: object.z }), size: shapeOf(object)?.size })),
@@ -796,7 +797,7 @@ ${world ? WORLD_RULES : STORY_RULES}
 修改的代价，导演会看到，能不花钱就不花钱：
 - 旁白、目标文字、按键提示这些屏幕上的字：不花钱，马上生效。
 - 一个步骤的 action、face、lines、settle、sound：重拍这一段视频。要人物开口说话，就写 lines；没有 face 的步骤要同时写 face。
-${project.othersStand ? '- 露脸镜头里的配角从这个地方一开始就站在这一步的东西旁边，游戏里和不露脸的镜头里都看得到他站着；这一步才出现的人（闯进来、躲着的现身、出门的回来）写进 arrives，可以写在他露脸之前的那一步。他们不说话、不做动作，要谁开口或做事，写进 face、face_cast 和 lines。改谁露面、谁进来，这个地方的不露脸镜头都要重拍。' : '- 不露脸的 action 镜头拍不到别的人物，那段视频不允许出现其他人。要谁露面或说话，只能写进 face、face_cast 和 lines。'}
+${project.othersStand ? '- 露脸镜头里的配角从这个地方一开始就站在这一步的东西旁边，游戏里和不露脸的镜头里都看得到他站着；这一步才出现的人（闯进来、躲着的现身、出门的回来）写进 arrives，可以写在他露脸之前的那一步。在场的人要换到这一步的东西旁边（凑过来、押着人、躲到窗帘后），写进这一步的 moves，镜头里拍他走过去。离开这个地方再回来，只有这一次露脸的人在。他们不说话、不做动作，要谁开口或做事，写进 face、face_cast 和 lines。改谁露面、谁进来，这个地方的不露脸镜头都要重拍。' : '- 不露脸的 action 镜头拍不到别的人物，那段视频不允许出现其他人。要谁露面或说话，只能写进 face、face_cast 和 lines。'}
 - 场景的 place、mood、edges，物件的样子，白模的摆放：重画这一场的布景，这一场的视频全部重拍。
 - 主角的 look 或 costume：重画定妆照和走路，全片的视频重拍，最贵。配角的只重画定妆照和露脸镜头。
 - 美术风格 style：全片重做。只有导演明确要求换风格时才改。

@@ -74,6 +74,45 @@ test('rewriting a file with the same content changes nothing downstream', async 
   assert.equal(ran['out.txt'], 1)
 })
 
+// Seen on 《榆园命案》: Lestrade's figure was painted again, the cut-out made from it still matched its old record, so the frames
+// that use the cut-out were taken at once, with the old Lestrade in them, and then counted as up to date.
+test('a step waits while a step before it is about to remake what it reads', async t => {
+  const { project, put } = await setup(t)
+  await put('prompt.txt', 'old')
+  const nodes = [
+    { id: 'paint', kind: 'k', resource: 'local', inputs: ['prompt.txt'], outputs: ['green.txt'] },
+    { id: 'cut', kind: 'k', resource: 'local', deps: ['paint'], inputs: ['green.txt'], outputs: ['figure.txt'] },
+    { id: 'frames', kind: 'k', resource: 'local', deps: ['cut'], inputs: ['figure.txt'], outputs: ['frame.txt'] },
+  ]
+  const copy = (from, to) => async context => writeFile(context.path(to), await readFile(context.path(from), 'utf8'))
+  const steps = { paint: copy('prompt.txt', 'green.txt'), cut: copy('green.txt', 'figure.txt'), frames: copy('figure.txt', 'frame.txt') }
+  await runner(project, nodes, steps)()
+  await put('prompt.txt', 'new')
+  const before = await statusesOf(project, nodes)
+  assert.equal(before.paint, 'stale')
+  assert.equal(before.cut, 'waiting', 'its file still matches, but the picture it is cut from is about to change')
+  assert.equal(before.frames, 'waiting')
+  const order = []
+  await runner(project, nodes, Object.fromEntries(Object.entries(steps).map(([id, step]) => [id, async context => { order.push(id); await step(context) }])))()
+  assert.deepEqual(order, ['paint', 'cut', 'frames'])
+  assert.equal(await readFile(join(projectDir(project.id), 'frame.txt'), 'utf8'), 'new')
+})
+
+test('a step before it that failed holds nothing up', async t => {
+  const { project, put } = await setup(t)
+  await put('in.txt', 'one')
+  const nodes = [
+    { id: 'first', kind: 'k', resource: 'local', inputs: ['in.txt'], outputs: ['first.txt'] },
+    { id: 'second', kind: 'k', resource: 'local', deps: ['first'], inputs: ['first.txt'], outputs: ['second.txt'] },
+  ]
+  await runner(project, nodes, { first: write('first.txt'), second: write('second.txt') })()
+  await put('in.txt', 'two')
+  await runner(project, nodes, { first: () => { throw new FatalError('模型拒绝了') }, second: write('second.txt') })()
+  const statuses = await statusesOf(project, nodes)
+  assert.equal(statuses.first, 'failed')
+  assert.equal(statuses.second, 'done', 'what it was made from is still what is on disk')
+})
+
 test('a changed setting counts as a changed input', async t => {
   const { project } = await setup(t)
   const build = prompt => [{ id: 'out.txt', kind: 'k', resource: 'local', params: { prompt }, outputs: ['out.txt'] }]

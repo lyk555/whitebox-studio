@@ -4,7 +4,7 @@ import { plateSees } from '../runtime/followCamera.js'
 import { OBJECT_COLOURS } from '../runtime/objectColours.js'
 import { pictureBounds } from './detail.mjs'
 import { LONGEST_TALKING_SHOT, speechSeconds } from './speech.mjs'
-import { inPicture } from './people.mjs'
+import { heightOf, inPicture } from './people.mjs'
 import { ARCHETYPES, personBox, wallsFirstCameraSees } from './stage.mjs'
 import { copiesLines, namedProps, propNamesOf, sentence, withoutLines } from './wording.mjs'
 
@@ -259,10 +259,15 @@ const withSound = (text, sound) => `${text}${sound ? `声音：${sound}。` : ''
 // What the hands do is written for a camera that comes in close, and this one may not: which of the two gives way has to be said.
 const KEEPS_WIDE = '第一帧是这个地方的固定全景，人物很小。镜头只缓慢推近一点点，始终是看得到所有人全身的全景，人物一直很小，看不清脸。画面里只有一个主角，不要出现第一人称视角的手。动作里手上的细节在全景里看不清也没关系，只要看得出主角在做这件事。'
 const standingThere = people => people.map(person => `${person.name}（${person.costume}），站在${person.where}`).join('；')
-const othersIn = (people, where) => people.length ? `${where}里还有${standingThere(people)}。他们一直站在原地，不走开，可以转头看向主角，外貌和服装全程不变。` : ''
+// Someone walking over during the shot is the one who does not keep still.
+const othersIn = (people, where, moving = []) => people.length ? `${where}里还有${standingThere(people)}。${moving.length ? `除了${moving.map(person => person.name).join('、')}，` : ''}他们一直站在原地，不走开，可以转头看向主角，外貌和服装全程不变。` : ''
+const walkersIn = (first, last) => last.filter(person => !first.includes(person) && first.some(other => other.name === person.name))
 const comeIn = (first, last) => {
   const arriving = last.filter(person => !first.includes(person))
-  return arriving.length ? `尾帧里${standingThere(arriving)}，是这时走进来的。` : ''
+  const walkedFrom = person => first.find(other => other.name === person.name)
+  const comes = arriving.filter(person => !walkedFrom(person))
+  const walks = arriving.filter(walkedFrom)
+  return (comes.length ? `尾帧里${standingThere(comes)}，是这时走进来的。` : '') + (walks.length ? `尾帧里${walks.map(person => `${person.name}站在${person.where}，是这时从${walkedFrom(person).where}走过来的`).join('；')}。` : '')
 }
 const ONLY_THESE = '不得出现别的地方、家具或人物。'
 const onlyThose = (text, people) => people.length ? text.replace(ONLY_THESE, '不得出现别的地方或家具，除了这里说到的这些人，不得出现别的人物。') : text
@@ -270,13 +275,16 @@ const CLOSE_ON_HANDS = '特写里只拍手和东西，不拍别人的脸。'
 // With several others in the room, a shot free at its end loses track of which small figure is the player, and brings in a second
 // one close to the camera (seen on 《雾都码头谜案》: five people in a warehouse of four). So it is told how many there are, and which.
 const CROWD = 2
-const whoLeads = (lead, count, there = '') => lead ? `画面里一共${count}个人。${lead.name}是第一帧里${lead.where}背对镜头、穿${lead.costume}的那一个，就是他${there ? '' : '走过去'}做这些动作；镜头前不要再出现另一个人，从头到尾都是这${count}个人。` : ''
+const whoLeads = (lead, count, there = '', coming = 0) => lead ? `画面里一共${count + coming}个人。${lead.name}是第一帧里${lead.where}背对镜头、穿${lead.costume}的那一个，就是他${there ? '' : '走过去'}做这些动作；镜头前不要再出现另一个人，${coming ? `第一帧里是${count}个人，走进来的人站定以后是这${count + coming}个人` : `从头到尾都是这${count}个人`}。` : ''
 // The game takes a step's first frame with the player already at its thing (game.js filmShots), and what a step shows is often
 // written from the walk over to it. Asked to walk to where he stands, a model walks him somewhere else and back, or brings a
 // second one in. Said only of a step written that way, so the others stay as they were.
 const WALKS_OVER = /走到|走向|走近|走去|走过去|走过来|挪到|挪向|迈步|踱/
 const alreadyAt = (who, thing) => `第一帧里${who}已经站在${thing}前，不用再走过去：下面写到走过来的地方都略过，动作从站在这里开始。`
 const BESIDE = 1.3 // Metres past a thing's edge that still reads as standing beside it.
+const FAR_APART = 2 // Metres. Further apart than this, two people talking are seen apart.
+// Everyone in the game stands, and the shot cuts back to the game.
+const STANDS_STILL = '人物都站着，不坐、不蹲、不靠在东西上，各自站在原地不走动。'
 
 // A shot that shows a face cannot also be pinned to frames: the video model allows one or the other.
 // So the shots that join the game are pinned and show no face, the shot with the face is made from
@@ -285,15 +293,20 @@ const BESIDE = 1.3 // Metres past a thing's edge that still reads as standing be
 // model shown a frame with the person in it paints them a second time. null means the shot is somewhere no picture shows.
 // A step can also say what the place sounds like under it (ambience). Its sound is written for the hands, and given to all three
 // shots a door is kicked in three times: so the shots after the first take the place's sound when there is one.
-function partsOf({ action, face, settle, sound, ambience, people, lines = [], landsOnEnd, fixedView = false, closeUp = false, facePlate, fadesOut = false, others = { first: [], last: [] }, lead = null, alone = false, thing = '' }) {
+function partsOf({ action, face, settle, sound, ambience, people, lines = [], landsOnEnd, fixedView = false, closeUp = false, facePlate, fadesOut = false, others = { first: [], last: [] }, lead = null, alone = false, thing = '', staging = '', key = null }) {
   const pinnedEnd = landsOnEnd ? LANDS_ON_LAST_FRAME : ''
   const lookOf = fixedView ? litFilmLook : filmLook
   const anyone = [...new Set([...others.first, ...others.last])]
   // The face shot is made from portraits and shows whoever it says, so only the shots pinned to the game are told who stands there.
   const look = () => onlyThose(lookOf(), anyone)
-  const opening = closeUp ? (others.first.length ? KEEPS_WIDE : FROM_WHOLE_ROOM) : ''
+  // Someone coming in during a step is seen to come in: before the face shot if it shows them, after it if not. Told only that
+  // they came in, the cut to the close-up of the hands brought them in out of nowhere (seen on 《榆园命案》).
+  const arriving = face ? others.last.filter(person => !others.first.includes(person)) : []
+  const seenIn = arriving.filter(person => people.some(shown => shown.name === person.name))
+  const comesLater = arriving.filter(person => !seenIn.includes(person))
+  const opening = closeUp ? (others.first.length || seenIn.length ? KEEPS_WIDE : FROM_WHOLE_ROOM) : ''
   const noFace = anyone.length ? `${people[0].name}${NO_FACE.replace('人物', '')}` : NO_FACE
-  const standing = othersIn(others.first, '第一帧') + comeIn(others.first, others.last)
+  const standing = othersIn(others.first, '第一帧', walkersIn(others.first, others.last)) + comeIn(others.first, others.last)
   const there = thing && WALKS_OVER.test(action) ? alreadyAt(anyone.length ? people[0].name : '人物', thing) : ''
   if (!face) {
     return [{ duration: 10, landsOnEnd, text: withSound(`电影短片。从第一帧开始。${opening}${there}${action}`, sound) + standing + noFace + (fadesOut ? FADES_TO_BLACK : '') + pinnedEnd + look() }]
@@ -303,20 +316,126 @@ function partsOf({ action, face, settle, sound, ambience, people, lines = [], la
   const shows = withSound(`电影镜头：${copiesLines(face, lines) ? sentence(withoutLines(face, lines)) : face}`, air) + (!fadesOut ? '' : lines.length ? FADES_AFTER_LINES : FADES_TO_BLACK)
   const fade = fadesOut ? FADE_SECONDS : 0
   const faceShot = fixedView
-    ? { duration: 4 + fade, showsFace: true, people, facePlate, text: shows + facesLine(people, facePlate !== null) + ONE_OF_EACH + (facePlate === null ? outsideLook(action) : faceLook()) }
-    : { duration: 4 + fade, showsFace: true, people, text: shows + facesLine(people) + lookOf() }
+    ? { duration: 4 + fade, showsFace: true, people, facePlate, text: shows + facesLine(people, facePlate !== null) + staging + ONE_OF_EACH + (facePlate === null ? outsideLook(action) : faceLook()) }
+    : { duration: 4 + fade, showsFace: true, people, text: shows + facesLine(people) + staging + lookOf() }
   const heardBy = alone && people.length === 1 ? (others.first.length ? TALKING_PAST_CAMERA : TALKING_ALONE) : TALKING_FACES
   const parts = [
-    { duration: 5, text: withSound(`电影短片，从第一帧开始。${opening}${there}${action}`, sound) + othersIn(others.first, '第一帧') + whoLeads(others.first.length >= CROWD && lead, others.first.length + 1, there) + noFace + onlyThose(lookOf(), others.first) },
+    { duration: 5, text: withSound(`电影短片，从第一帧开始。${opening}${there}${action}`, sound) + othersIn(others.first, '第一帧', walkersIn(others.first, seenIn)) + walksIn(seenIn, '动作进行时', others.first) + whoLeads(others.first.length >= CROWD && lead, others.first.length + 1, there, seenIn.length - walkersIn(others.first, seenIn).length) + noFace + onlyThose(lookOf(), [...others.first, ...seenIn]) },
     lines.length
       ? { ...faceShot, duration: Math.min(LONGEST_TALKING_SHOT, speechSeconds(lines) + fade), lines, text: linesToSay(lines, people) + faceShot.text.replace(ONE_OF_EACH, heardBy).replace(FILM_SOUND, TALKING_SOUND) }
       : faceShot,
   ]
   if (landsOnEnd) {
-    parts.push({ duration: 4, landsOnEnd: true, opensOnCut: true, text: withSound(`电影短片。从第一帧开始，切到特写：${settle || '手收回来。'}然后切到给定尾帧的构图，人物背对镜头站定。`, air) + standing + (anyone.length ? CLOSE_ON_HANDS : '') + noFace + pinnedEnd + look() })
+    // The game's first frame starts this shot, from before anyone came in; what comes after the cut is where they stand now.
+    const atEnd = arriving.length ? othersIn(others.first, '第一帧', walkersIn(others.first, arriving)) + (seenIn.length ? `尾帧里${standingThere(seenIn)}，${seenIn.some(person => others.first.some(other => other.name === person.name)) ? '刚才已经走到那里了' : '刚才已经走进来了'}。` : '') : standing
+    const settles = comesLater.length ? `${walksIn(comesLater, '', others.first).replace(/。$/, '，')}${people[0].name}背对镜头站定。` : '人物背对镜头站定。'
+    parts.push({ duration: comesLater.length ? 6 : 4, landsOnEnd: true, opensOnCut: true, text: withSound(`电影短片。从第一帧开始，切到特写：${settle || '手收回来。'}然后切到给定尾帧的构图，${settles}`, air) + atEnd + (anyone.length ? CLOSE_ON_HANDS : '') + noFace + pinnedEnd + look() })
   }
-  return parts
+  if (!key) return parts
+  // The same step as one take, through the picture of it pushed in (key). Each shot starts on the picture the one before ended on,
+  // so nothing jumps. The shots above are what each becomes if the video model will not start from that picture.
+  return oneTake({ action, face, sound, air, people, lines, landsOnEnd, fadesOut, fade, others, lead, there, key, arriving, lookOf }).map((part, index) => ({ ...part, fallback: parts[index] }))
 }
+
+// ---------------------------------------------------------------- the picture a take is pushed in to
+// No closer than this share of the game's picture across. The video model refuses a picture whose faces are big enough to be a
+// real person's: on 《榆园命案》 the boot room pushed in to half the width, Holmes turned to the camera, was refused; the sitting
+// room at seven tenths, Holmes's back to it and the others' faces small, was taken.
+const CLOSEST_KEY = 0.7
+// Room round what has to be in it, as a share of its size: headroom, and a little floor.
+const KEY_ROOM = { across: 0.18, up: 0.14, down: 0.08 }
+
+// The part of the game's picture that holds all of these, as wide as the picture is, in its pixels.
+export function framed(boxes, [width, height] = [PLATE_WIDTH, PLATE_HEIGHT]) {
+  let x0 = Math.min(...boxes.map(box => box.x0))
+  let x1 = Math.max(...boxes.map(box => box.x1))
+  let y0 = Math.min(...boxes.map(box => box.y0))
+  let y1 = Math.max(...boxes.map(box => box.y1))
+  const [w, h] = [x1 - x0, y1 - y0]
+  x0 -= w * KEY_ROOM.across
+  x1 += w * KEY_ROOM.across
+  y0 -= h * KEY_ROOM.up
+  y1 += h * KEY_ROOM.down
+  const aspect = width / height
+  let across = Math.max(x1 - x0, (y1 - y0) * aspect, width * CLOSEST_KEY)
+  across = Math.min(across, width)
+  const down = across / aspect
+  const middle = [(x0 + x1) / 2, (y0 + y1) / 2]
+  const left = Math.min(Math.max(middle[0] - across / 2, 0), width - across)
+  const top = Math.min(Math.max(middle[1] - down / 2, 0), height - down)
+  return { x0: left, y0: top, x1: left + across, y1: top + down }
+}
+
+// Painted from the game's own picture, pushed in, so the room and where everyone stands are the game's; the faces from the portraits.
+export const keyPrompt = (project, people, layout) => `图1是电影里一个镜头推近以后的画面，是从游戏画面里放大出来的，很模糊，但构图是准确的。把它重新画成同一个镜头的一张清晰的写实电影剧照：相机位置、视角和构图，房间、墙面、门窗和家具的位置、大小和样子，每个人站的位置、身高和身体朝向，都必须和图1一致，不得增加、移走或挪动任何人和东西，人和家具的比例保持图1的样子。${people.map((person, index) => `图${index + 2}是${person.name}的定妆照，穿着：${person.costume}`).join('；')}。脸必须和各自的定妆照完全相同，是同一个人，但不要照搬定妆照的灰色背景和构图。画面里：${layout}。人物都站着，不坐、不蹲、不靠在东西上。除了这些人，画面里没有别的人。光线、光源和色调与图1一致，不要增加光源。风格：${sentence(project.style)}不得出现文字或水印。`
+
+// ---------------------------------------------------------------- one take
+// Told only to stay still, a whole step was three shots joined by cuts: the room, a face from somewhere else in it, a close-up of
+// the hands, and back. Seen on 《榆园命案》: Holmes at the boot rack, cut to his face, cut to the boots, cut back, and everyone
+// stood somewhere new each time. Now the camera moves in to a picture of the step pushed in, painted from the game's own picture
+// so everyone stands where they stand, holds there for the lines, and moves back out to the game.
+const ONE_TAKE = '这是一个连续的镜头，中间不切镜头，不跳到别的画面，也不插入特写。'
+const NOTHING_JUMPS = '人物不会凭空出现、消失或瞬间换位置：谁换了位置，都要拍出他走过去的过程。镜头推近或拉远时，人和房间、家具的比例始终不变。'
+const HOLDS_FOR_LINES = '这一段是同一个画面里的对话：第一帧和最后一帧都是给定的这张画面，镜头几乎不动，最多极慢地推近一点，最后回到第一帧的构图。'
+const LOOKS_AT_EACH_OTHER = '说话的人看着对方说，不看镜头；没轮到说话的人听着，嘴闭上。'
+// A shot with nothing to fall back on whose first picture is refused, as a face too near (seen on 《榆园命案》: the opening in the
+// garden, Lestrade's face at the top of the long-lens picture), starts on the picture it ends on and holds there, so the scene
+// still opens without a jump into the game. Its sound and the rules after the action are kept as they were.
+export const HELD_SECONDS = 5
+export function heldOn(part) {
+  const sound = part.prompt.match(/声音：[^。]*。/)?.[0] ?? ''
+  const rules = part.prompt.indexOf('写实电影质感')
+  return {
+    ...part, first: part.last, duration: HELD_SECONDS, opensOnCut: false,
+    prompt: `电影短片。${ONE_TAKE}第一帧和最后一帧都是给定的这张画面：镜头几乎不动，极慢地推近一点，再回到这个构图并停稳。画面里的人都站在原地不走动，可以轻微转头、呼吸。${sound}${rules >= 0 ? part.prompt.slice(rules) : litFilmLook()}`,
+  }
+}
+
+// Someone walks over in this time, which a few steps take; otherwise the camera's move and the hands are all there is.
+const PUSH_IN_SECONDS = 5
+const WALKING_SECONDS = 6
+
+function oneTake({ action, face, sound, air, people, lines, landsOnEnd, fadesOut, fade, others, lead, there, key, arriving, lookOf }) {
+  const player = people[0]
+  const inKey = person => key.keys.includes(person.key)
+  // Who walks during the push in: anyone in the picture it ends on who was not standing there at the start.
+  const nowIn = arriving.filter(inKey)
+  const later = arriving.filter(person => !inKey(person))
+  const walkers = walkersIn(others.first, nowIn)
+  const look = shown => onlyThose(lookOf(), shown)
+  const hero = `${player.name}（${player.costume}）在第一帧里${lead ? lead.where : ''}背对镜头。`
+  const pushIn = {
+    duration: nowIn.length ? WALKING_SECONDS : PUSH_IN_SECONDS, from: 'first', to: 'key',
+    text: withSound(`电影短片。${ONE_TAKE}从第一帧的全景开始，镜头平稳地缓缓推近${key.toward}，最后停在给定尾帧的构图上。${hero}${there}${action}`, sound)
+      + othersIn(others.first, '第一帧', walkers) + walksIn(nowIn, '动作进行时', others.first)
+      + `尾帧里：${key.layout}。` + NOTHING_JUMPS + LANDS_ON_LAST_FRAME + look([...others.first, ...nowIn]),
+  }
+  const shows = withSound(`电影镜头：${copiesLines(face, lines) ? sentence(withoutLines(face, lines)) : face}`, air)
+  const talking = lines.length ? linesToSay(lines, people) : ''
+  const hold = {
+    duration: lines.length ? Math.min(LONGEST_TALKING_SHOT, speechSeconds(lines) + fade) : 4 + fade, from: 'key', to: fadesOut ? null : 'key',
+    // What the step shows was written for a face shot of its own, and can put people where the game does not (Jem by the
+    // brushes, when he stands at the boot rack): where they stand is the picture's.
+    text: `${talking}电影短片。${ONE_TAKE}${fadesOut ? '第一帧是给定的这张画面，镜头几乎不动。' : HOLDS_FOR_LINES}${shows}谁站在哪，以画面为准，上面写的位置和画面不一样时，照画面来：${key.layout}。${STANDS_STILL}${lines.length ? LOOKS_AT_EACH_OTHER : ''}`
+      + (fadesOut ? (lines.length ? FADES_AFTER_LINES : FADES_TO_BLACK) : LANDS_ON_LAST_FRAME)
+      + look(key.people).replace(FILM_SOUND, lines.length ? TALKING_SOUND : FILM_SOUND),
+  }
+  if (!landsOnEnd) return [pushIn, hold]
+  const backOut = {
+    duration: later.length ? WALKING_SECONDS : 4, from: 'key', to: 'last',
+    text: withSound(`电影短片。${ONE_TAKE}从第一帧开始，镜头平稳地缓缓拉远，回到给定尾帧的全景构图。${player.name}转回去，背对镜头站定。`, air)
+      + (later.length ? walksIn(later, '镜头拉远时', others.first) : '')
+      + othersIn(others.last.filter(person => !later.includes(person)), '尾帧')
+      + NOTHING_JUMPS + LANDS_ON_LAST_FRAME + look(others.last),
+  }
+  return [pushIn, hold, backOut]
+}
+
+// Who comes in, through which way, to where they then stand; or, already in the room, walks over from where they stood.
+const walksIn = (people, when, before = []) => people.length ? `${when ? `${when}，` : ''}${people.map(person => {
+  const was = before.find(other => other.name === person.name)
+  return was ? `${person.name}从${was.where}走到${person.where}站定` : `${person.name}（${person.costume}）从${person.door}走进来，走到${person.where}站定`
+}).join('；')}，之后一直站在那里，可以转头看向主角。` : ''
 
 // Every video in a scene, in the order they play.
 export function filmClips(project, scene, stage) {
@@ -327,7 +446,7 @@ export function filmClips(project, scene, stage) {
   }
   const fixedView = Boolean(stage.shell.CAMERAS.a.fixed)
   // Who else is in the game's pictures a clip starts and ends on: only those the stage found somewhere to stand.
-  const standing = new Map((stage.data.people ?? []).map(person => [person.id, person]))
+  const standing = new Map((stage.data.people ?? []).map(person => [person.key ?? person.id, person]))
   const seenAt = inPicture(scene)
   // Where they are in the picture, as the frame shows them. Their thing is named only when they really are beside it: told
   // "by the armchair" of someone a few metres off, a model walks them over to it.
@@ -344,17 +463,25 @@ export function filmClips(project, scene, stage) {
     const mark = stage.data.story.beats.find(entry => entry.id === beatId)?.anchor
     return mark ? { name: player.name, costume: player.costume, where: whereIs(mark, null) } : null
   }
+  // The way in nearest where someone ends up: a person coming in is seen to come in through it. Every way out is at the far side.
+  const wayInFor = spot => {
+    const way = [...(stage.shell.EXITS ?? [])].sort((one, other) => Math.hypot(one.anchor.x - spot.x, one.anchor.z - spot.z) - Math.hypot(other.anchor.x - spot.x, other.anchor.z - spot.z))[0]
+    if (!way) return '画面外'
+    return `${whereIs(way.anchor, null)}远处的${scene.exits?.find(exit => exit.id === way.id)?.name || scene.exit?.name || '出口'}`
+  }
   const othersAt = clipId => {
-    const described = entries => entries.filter(entry => standing.has(entry.cast)).flatMap(entry => {
+    const keyOf = entry => entry.key ?? entry.cast
+    const described = entries => entries.filter(entry => standing.has(keyOf(entry))).flatMap(entry => {
       const person = project.cast.find(candidate => candidate.id === entry.cast)
       const beat = scene.beats.find(candidate => candidate.id === entry.by)
-      return person ? [{ name: person.name, costume: person.costume, where: whereIs(standing.get(entry.cast), beat) }] : []
+      const spot = standing.get(keyOf(entry))
+      return person ? [{ key: keyOf(entry), name: person.name, costume: person.costume, where: whereIs(spot, beat), door: wayInFor(spot), spot, by: entry.by }] : []
     })
     const { first, last } = seenAt(clipId)
     // The opening starts too close for anyone whose face would show (stage.mjs): they walk in while it pulls back.
-    const firstPeople = described(clipId === 'opening' ? first.filter(entry => !standing.get(entry.cast)?.walksIn) : first)
-    // The same person on both ends is the same entry, so arrivals can be told by who is new.
-    return { first: firstPeople, last: described(last).map(person => firstPeople.find(other => other.name === person.name) ?? person) }
+    const firstPeople = described(clipId === 'opening' ? first.filter(entry => !standing.get(keyOf(entry))?.walksIn) : first)
+    // The same entry on both ends is the same person, so who came in, or walked over, can be told by who is new.
+    return { first: firstPeople, last: described(last).map(person => firstPeople.find(other => other.key === person.key) ?? person) }
   }
   const clips = [{
     id: 'opening', title: '开场',
@@ -371,6 +498,85 @@ export function filmClips(project, scene, stage) {
     const there = new Set(othersAt(beat.id).first.map(person => person.name))
     return (beat.faceCast ?? []).filter(name => there.has(name) || (beat.face ?? '').includes(name) || (beat.lines ?? []).some(line => line.who === name))
   }
+  // A face shot is made from portraits and an empty picture of the place, so where everyone stands has to be said. Told nothing,
+  // a model stages the talk where it likes. Seen on 《榆园命案》: Holmes, at the experiment table in the game, sat by the fire in
+  // the cut to Watson's face; Ellen, across the room from him, stood at his shoulder; then both were back where they had been.
+  // Beside the thing they were put by, as the shots of the game say it; else the nearest, so a small thing on the wall is not it.
+  const gapTo = (spot, block) => Math.hypot(Math.max(Math.abs(spot.x - block.center[0]) - block.size[0] / 2, 0), Math.max(Math.abs(spot.z - block.center[2]) - block.size[2] / 2, 0))
+  const besideWhat = (spot, by) => {
+    const own = stage.blocks.find(block => block.name === scene.beats.find(beat => beat.id === by)?.object)
+    if (own && gapTo(spot, own) <= BESIDE) return `${own.label}旁`
+    const near = stage.blocks.filter(block => !block.onTop).sort((one, other) => gapTo(spot, one) - gapTo(spot, other))[0]
+    return near && gapTo(spot, near) <= BESIDE ? `${near.label}旁` : '房间里'
+  }
+  const stagingAt = (beat, shown) => {
+    const mark = scene.onStage && stage.data.story.beats.find(entry => entry.id === beat.id)?.anchor
+    if (!mark) return ''
+    // Where they stand once the step is done: whoever walks over during it has done so before the face shot.
+    const end = othersAt(beat.id).last
+    const others = shown.filter(person => person !== player).flatMap(person => end.filter(there => there.name === person.name)).map(there => ({ ...there, apart: Math.hypot(there.spot.x - mark.x, there.spot.z - mark.z) }))
+    const far = others.filter(other => other.apart > FAR_APART).map(other => other.name)
+    const where = [`${player.name}站在${beat.objectName || '这里'}前`, ...others.map(other => `${other.name}站在${besideWhat(other.spot, other.by)}，离${player.name}约${Math.max(1, Math.round(other.apart * 2) / 2)}米`)]
+    return `站位和游戏里一样：${where.join('；')}。${STANDS_STILL}${far.length ? `${far.join('、')}和${player.name}隔着这段距离说话，不要走近，也不要并肩站在一起：镜头可以越过一个人的肩膀拍远处的另一个人，但两人之间始终隔着这段距离。` : ''}`
+  }
+  // The picture a step's take is pushed in to: the part of the game's picture with the player, the thing and whoever the shot
+  // shows, painted again clear and with their faces. Cut from the picture the step ends on, so whoever walks over or comes in
+  // during it is already where they stand. Only when everyone the shot shows is standing in the room: a face shot for someone
+  // the game does not show would have to paint them in.
+  const keyFor = (beat, shown) => {
+    if (!fixedView || !beat.face) return null
+    const mark = stage.data.story.beats.find(entry => entry.id === beat.id)?.anchor
+    if (!mark) return null
+    const closes = Boolean(beat.endsChapter)
+    const { first, last } = othersAt(beat.id)
+    const there = closes ? first : last
+    const others = shown.filter(person => person !== player)
+    if (!others.every(person => there.some(one => one.name === person.name))) return null
+    const camera = stage.shell.CAMERAS.a
+    const bounds = box => pictureBounds(box, camera)
+    const heroBox = bounds(personBox({ x: mark.x, z: mark.z, height: heightOf(player) }))
+    const thing = stage.blocks.find(block => block.name === beat.object)
+    const talkers = there.filter(one => others.some(person => person.name === one.name))
+    const must = [heroBox, thing && bounds(thing), ...talkers.map(one => bounds(personBox(one.spot)))].filter(Boolean)
+    if (!heroBox) return null
+    const rect = framed(must)
+    const share = box => {
+      const inside = Math.max(0, Math.min(box.x1, rect.x1) - Math.max(box.x0, rect.x0)) * Math.max(0, Math.min(box.y1, rect.y1) - Math.max(box.y0, rect.y0))
+      return inside / ((box.x1 - box.x0) * (box.y1 - box.y0))
+    }
+    // Everyone mostly in the picture is in it, said or not: a person left out of the words is painted out, or into someone else.
+    const inIt = there.filter(one => {
+      const box = bounds(personBox(one.spot))
+      return box && share(box) > 0.5
+    })
+    const across = box => {
+      const middle = ((box.x0 + box.x1) / 2 - rect.x0) / (rect.x1 - rect.x0)
+      return middle < 0.35 ? '画面左侧' : middle > 0.65 ? '画面右侧' : '画面中间'
+    }
+    const shorter = person => {
+      const gap = heightOf(player) - heightOf(person)
+      return gap >= 0.25 ? `，比${player.name}矮一个头` : gap >= 0.08 ? `，比${player.name}矮一些` : ''
+    }
+    const pictured = [player, ...inIt.map(one => project.cast.find(person => person.name === one.name)).filter(Boolean)]
+    const where = person => {
+      if (person === player) return `${player.name}在${across(heroBox)}，站在${beat.objectName || '这里'}前`
+      const one = inIt.find(candidate => candidate.name === person.name)
+      return `${person.name}在${across(bounds(personBox(one.spot)))}，站在${besideWhat(one.spot, one.by)}${shorter(person)}`
+    }
+    const talksTo = talkers.filter(one => inIt.includes(one)).map(one => one.name)
+    // He keeps his back to the camera, as the game has him: his face turned to it is the one big enough to be refused.
+    const turn = talksTo.length ? `${player.name}刚做完手上的事，还是背对镜头站着，只把头转向${talksTo.join('和')}；${talksTo.join('、')}面向${player.name}` : `${player.name}刚做完手上的事，还是背对镜头站着，微微低头`
+    const layout = `${pictured.map(where).join('；')}。${turn}`
+    return {
+      from: closes ? 'first' : 'last',
+      rect: [rect.x0 / PLATE_WIDTH, rect.y0 / PLATE_HEIGHT, (rect.x1 - rect.x0) / PLATE_WIDTH, (rect.y1 - rect.y0) / PLATE_HEIGHT].map(value => Number(value.toFixed(4))),
+      keys: inIt.map(one => one.key),
+      people: pictured,
+      layout,
+      toward: `到${player.name}和${beat.objectName || '他面前的东西'}${talksTo.length ? `，以及${talksTo.join('、')}` : ''}`,
+      prompt: keyPrompt(project, pictured, layout),
+    }
+  }
   // An id is for the code. Written into a shot by a model, it is put back to what the thing is called.
   const called = propNamesOf(project)
   const named = text => namedProps(text, called)
@@ -378,10 +584,13 @@ export function filmClips(project, scene, stage) {
     if (!beat.performed || !stage.data.story.beats.some(entry => entry.id === beat.id && entry.clip)) continue
     // The last step of a chapter is where the chapter closes: it runs on to black, with no picture to come back to.
     const closes = Boolean(beat.endsChapter)
+    const shown = peopleFor(inFaceShot(beat))
+    const key = keyFor(beat, shown)
     clips.push({
       id: beat.id, title: beat.objective,
-      parts: partsOf({ action: named(beat.action), face: named(beat.face), settle: named(beat.settle), sound: beat.sound, ambience: beat.ambience, people: peopleFor(inFaceShot(beat)), lines: beat.lines, landsOnEnd: !closes, fixedView, closeUp: fixedView, facePlate: 'plate_a_closed.png', fadesOut: closes, others: othersAt(beat.id), lead: leadAt(beat.id), alone: Boolean(scene.onStage), thing: beat.objectName }),
+      parts: partsOf({ action: named(beat.action), face: named(beat.face), settle: named(beat.settle), sound: beat.sound, ambience: beat.ambience, people: shown, lines: beat.lines, landsOnEnd: !closes, fixedView, closeUp: fixedView, facePlate: 'plate_a_closed.png', fadesOut: closes, others: othersAt(beat.id), lead: leadAt(beat.id), alone: Boolean(scene.onStage), thing: beat.objectName, staging: beat.face ? stagingAt(beat, shown) : '', key }),
       hasLast: !closes,
+      ...(key ? { key } : {}),
     })
   }
   // A way out on the map is a cut, with no shot of its own, and a place has no ending: chapters do.

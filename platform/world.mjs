@@ -3,6 +3,7 @@
 import { walkThrough } from '../runtime/journey.js'
 import { MOST_WAYS } from '../runtime/shell.js'
 import { onStageFrom } from './people.mjs'
+import { thingsApart } from './stage.mjs'
 
 export const isWorld = project => project?.flow === 'chapters'
 export const chaptersOf = project => project.chapters ?? []
@@ -63,7 +64,7 @@ export function settleWorld(project) {
     scene.props = [...owner].filter(([id, where]) => where === scene.id && pool.has(id)).map(([id]) => pool.get(id))
     scene.carried = [...owner].filter(([id, where]) => where !== scene.id && pool.has(id)).map(([id, where]) => ({ ...pool.get(id), from: where }))
     // Who stands in the room follows from its steps, so it is worked out again whenever they may have changed.
-    if (project.othersStand) scene.onStage = onStageFrom(project.cast, scene, chaptersOf(project).flatMap(chapter => chapter.anchors))
+    if (project.othersStand) scene.onStage = onStageFrom(project.cast, scene, chaptersOf(project).flatMap(chapter => chapter.anchors), thingsApart(scene))
   }
   return project
 }

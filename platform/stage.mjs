@@ -6,6 +6,7 @@ import { cameraIsClear, plateSees, shotPose, staysOnPlate } from '../runtime/fol
 import { SHOT_DISTANCE } from '../runtime/story.js'
 import { PLAYER_RADIUS, shellFrom, walkableIn } from '../runtime/shell.js'
 import { pictureBounds } from './detail.mjs'
+import { together } from './people.mjs'
 import { INTERACT_RADIUS } from '../runtime/world.js'
 
 const box = (x, y, z, w, h, d) => ({ shape: 'box', at: [x, y, z], size: [w, h, d] })
@@ -77,6 +78,14 @@ const angleDelta = (from, to) => Math.atan2(Math.sin(to - from), Math.cos(to - f
 
 // A video pinned to the game's picture must not show a face, so whoever performs has their back to the camera.
 const MAX_TURN_FROM_BACK = 1.2
+
+// How far apart two of a place's things stand, centre to centre on the floor, in metres. Null for a thing it does not have.
+// Worked out from where the things are put, before anyone stands in the room, so who stands there can be worked out from it.
+export function thingsApart(scene) {
+  const { blocks } = buildBlocks(scene.objects ?? [])
+  const at = new Map(blocks.map(block => [block.name, block.center]))
+  return (one, other) => (at.has(one) && at.has(other) ? Math.hypot(at.get(one)[0] - at.get(other)[0], at.get(one)[2] - at.get(other)[2]) : null)
+}
 
 function buildBlocks(objects) {
   const placed = new Map()
@@ -473,7 +482,7 @@ export function buildStage(scene) {
   // the camera pulls back, and is in the picture it ends on.
   const openingLens = { position: shell.CAMERAS.a.position, target: openingTarget, fov: OPENING_FOV }
   for (const person of people) {
-    const head = pictureBounds({ center: [person.x, PERSON_HEIGHT - 0.125, person.z], size: [0.25, 0.25, 0.25] }, openingLens)
+    const head = pictureBounds({ center: [person.x, (person.height ?? PERSON_HEIGHT) - 0.125, person.z], size: [0.25, 0.25, 0.25] }, openingLens)
     const across = head && (head.x0 + head.x1) / 2
     const down = head && (head.y0 + head.y1) / 2
     if (head && across >= 0 && across <= PLATE_SIZE[0] && down >= 0 && down <= PLATE_SIZE[1]) person.walksIn = true
@@ -528,7 +537,8 @@ const PERSON_CLEAR = 0.9 // Metres from where the player has to stand: a step's 
 const WAY_CLEAR = 1.2 // From a way out, which is walked through and not only stood at.
 const NEAR_THING = 2.5 // Metres. Further than this from their thing, they are not standing by it.
 const FURTHEST_FROM_THING = 5 // Still in the room, rather than not there at all.
-export const personBox = ({ x, z }) => ({ center: [x, PERSON_SIZE[1] / 2, z], size: PERSON_SIZE })
+// As tall as they are: a boy of fourteen is not as tall as Holmes (see heightOf in people.mjs).
+export const personBox = ({ x, z, height = PERSON_HEIGHT }) => ({ center: [x, height / 2, z], size: [PERSON_SIZE[0], height, PERSON_SIZE[2]] })
 // Walking is kept this far from a person standing, centre to centre.
 export const PERSON_REACH = 0.3 + PLAYER_RADIUS
 
@@ -541,7 +551,10 @@ function standPeople(scene, { blocks, standing, walkable, shell, spawn, beats, i
   const marks = beats.flatMap(beat => beat.anchor ? [beat.anchor] : [])
   const ways = shell.EXITS.map(way => ({ anchor: way.anchor, box: { center: [way.x, way.height / 2, way.z], size: [way.width, way.height, 0.1] } }))
   const placed = []
+  // Only those in the room at the same time have to keep clear of each other.
+  const atOnce = together(scene)
   for (const entry of scene.onStage ?? []) {
+    const alongside = () => placed.filter(other => atOnce(entry, other.entry))
     const beat = (scene.beats ?? []).find(candidate => candidate.id === entry.by)
     const block = beat && blocks.find(candidate => candidate.name === beat.object)
     if (!block) {
@@ -552,20 +565,22 @@ function standPeople(scene, { blocks, standing, walkable, shell, spawn, beats, i
     const side = !mark || block.center[0] >= mark.x ? 1 : -1
     const beside = sign => ({ x: block.center[0] + sign * (block.size[0] / 2 + 0.55), z: block.center[2] + block.size[2] / 4 })
     const clear = (x, z, others) => others.every(other => Math.hypot(x - other.x, z - other.z) >= PERSON_REACH)
-    const fits = spot => {
+    const tall = entry.height ? { height: entry.height } : {}
+    const fits = candidate => {
+      const spot = { ...candidate, ...tall }
       if (!walkable(spot.x, spot.z, false)) return false
       if ([...marks, spawn].some(point => Math.hypot(spot.x - point.x, spot.z - point.z) < PERSON_CLEAR)) return false
       if (ways.some(way => Math.hypot(spot.x - way.anchor.x, spot.z - way.anchor.z) < WAY_CLEAR)) return false
-      if (placed.some(other => Math.hypot(spot.x - other.x, spot.z - other.z) < PERSON_CLEAR)) return false
+      if (alongside().some(other => Math.hypot(spot.x - other.x, spot.z - other.z) < PERSON_CLEAR)) return false
       const body = personBox(spot)
       // Nor in front of each other: two people overlapping read as one.
-      const others = placed.map(personBox)
+      const others = alongside().map(personBox)
       if (cameraSeeing(body, shell) !== 'a' || hiddenShare(body, [...standing, ...others], camera) > 0.1) return false
       if (others.some(other => hiddenShare(other, [body], camera) > 0.1)) return false
       if (used.some(thing => hiddenShare(thing, [body], camera) > MOST_HIDDEN)) return false
       if (ways.some(way => hiddenShare(way.box, [body], camera) > MOST_HIDDEN)) return false
       // Last, as the slowest: they must not cut off any of the room the story needs.
-      const around = (x, z, open) => walkable(x, z, open) && clear(x, z, [...placed, spot])
+      const around = (x, z, open) => walkable(x, z, open) && clear(x, z, [...alongside(), spot])
       const reach = floodFrom(spawn, around)
       return marks.every(reach) && ways.every(way => reach(way.anchor))
     }
@@ -588,9 +603,9 @@ function standPeople(scene, { blocks, standing, walkable, shell, spawn, beats, i
       issues.push({ level: 'warning', message: `“${block.label}”旁边站不下人，第 ${entry.by} 步说话的人物不会出现在画面里，只在露脸镜头里出现。`, object: block.name, beat: entry.by })
       continue
     }
-    placed.push({ id: entry.cast, x: spot.x, z: spot.z, mirror: spot.x < (mark?.x ?? block.center[0]), ...(entry.after ? { after: entry.after } : {}), ...(entry.from ? { from: entry.from } : {}), file: `figure_${entry.cast}.png` })
+    placed.push({ entry, id: entry.cast, ...(entry.key ? { key: entry.key } : {}), x: spot.x, z: spot.z, ...tall, mirror: spot.x < (mark?.x ?? block.center[0]), ...Object.fromEntries(['after', 'from', 'until', 'before'].filter(when => entry[when]).map(when => [when, entry[when]])), file: `figure_${entry.cast}.png` })
   }
-  return placed
+  return placed.map(({ entry, ...person }) => person)
 }
 
 // Which of the side walls the first camera has in its picture, so what it is told to paint matches what it is shown.

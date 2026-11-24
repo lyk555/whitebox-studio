@@ -8,7 +8,7 @@ import { boundsFromPaint, footprintOf, isColourMap, labelThings, nearestWalkable
 import { fitToWhitebox, silhouetteOverlap } from './plateFit.js'
 import { createHud } from './hud.js'
 import { createSound, createStepCounter } from './sound.js'
-import { BEATS, createStory, EXITS, ITEMS, JOURNEY, LAST_OBJECTIVE, LAST_SHOT, OPENING, OPENING_SHOT, PEOPLE, peopleThere, rehearsalProgress, SCENE_ID, SHOT_DISTANCE, STAGE_PROP, TITLE } from './story.js'
+import { BEATS, createStory, EXITS, ITEMS, JOURNEY, LAST_OBJECTIVE, LAST_SHOT, OPENING, OPENING_SHOT, keyOf, PEOPLE, peopleThere, rehearsalProgress, SCENE_ID, SHOT_DISTANCE, STAGE_PROP, TITLE } from './story.js'
 import { BLOCKS, CAMERA_SWITCH, CAMERAS, DOOR, DOOR_ANCHOR, EXIT_KIND, EXIT_REACH, EXIT_Z, CORRIDOR_CAMERA, GLOWS, isWalkable, paintedBy, PLAYER_RADIUS, RELAXED, ROOM, ROOM_KIND, SHELLS, SPAWN, WAYS_OUT } from './world.js'
 
 const WIDTH = 1280
@@ -469,12 +469,12 @@ const others = PEOPLE.map(person => {
 
 // A frame for a video says who is there. Otherwise it is who the story has brought in so far.
 let othersInFrame = null
-const othersHere = () => othersInFrame ?? new Set(peopleThere(id => story.isReached(id), id => story.isDone(id)).map(person => person.id))
+const othersHere = () => othersInFrame ?? new Set(peopleThere(id => story.isReached(id), id => story.isDone(id)).map(keyOf))
 
 // Walking keeps clear of whoever is standing there.
 function walkableNow() {
   const there = othersHere()
-  const standing = others.filter(other => there.has(other.person.id)).map(other => other.person)
+  const standing = others.filter(other => there.has(keyOf(other.person))).map(other => other.person)
   if (!standing.length) return isWalkable
   return (x, z, open) => isWalkable(x, z, open) && standing.every(person => Math.hypot(x - person.x, z - person.z) >= PERSON_REACH)
 }
@@ -494,8 +494,10 @@ async function loadOthers() {
     other.material.map?.dispose()
     other.material.map = texture
     other.material.needsUpdate = true
-    other.picture.scale.set(PERSON_HEIGHT * image.naturalWidth / image.naturalHeight, PERSON_HEIGHT, 1)
-    other.picture.position.set(other.person.x, PERSON_HEIGHT / 2, other.person.z)
+    // As tall as the stage says they are: a boy of fourteen does not stand as tall as Holmes.
+    const tall = other.person.height ?? PERSON_HEIGHT
+    other.picture.scale.set(tall * image.naturalWidth / image.naturalHeight, tall, 1)
+    other.picture.position.set(other.person.x, tall / 2, other.person.z)
     other.loaded = true
   }
 }
@@ -507,7 +509,7 @@ function poseOthers(viewer, light) {
   const along = (x, z) => (x - position[0]) * (target[0] - position[0]) + (z - position[2]) * (target[2] - position[2])
   for (const other of others) {
     const { person } = other
-    const shown = actorVisible && there.has(person.id)
+    const shown = actorVisible && there.has(keyOf(person))
     other.picture.visible = shown && rendered && other.loaded
     other.clay.root.visible = shown && !other.picture.visible
     other.shadow.visible = shown
@@ -2330,10 +2332,10 @@ function filmShots() {
   // Who stands in the room at a step's shot, in the order steps come in this place: everyone whose part of the story has got here, and
   // who has come in by then.
   const indexOf = id => BEATS.findIndex(beat => beat.id === id)
-  const thereAt = (at, done) => new Set(peopleThere(id => indexOf(id) <= at, id => done.includes(id)).map(person => person.id))
+  const thereAt = (at, done) => new Set(peopleThere(id => indexOf(id) <= at, id => done.includes(id)).map(keyOf))
   const room = { camera: 'a', mark: SPAWN, open: false, note: true, present: thereAt(-1, []) }
   // Close enough in the opening's long lens to show a face is too close for the video model: they walk in as it pulls back.
-  const openingClose = new Set([...room.present].filter(id => !PEOPLE.find(person => person.id === id)?.walksIn))
+  const openingClose = new Set([...room.present].filter(key => !PEOPLE.find(person => keyOf(person) === key)?.walksIn))
   return [
     { clip: 'opening', first: { ...room, pose: OPENING_POSE, present: openingClose }, last: { ...room, pose: firstView() } },
     ...BEATS.filter(beat => beat.clip).map(beat => {

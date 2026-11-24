@@ -9,7 +9,7 @@ import { FatalError } from './engine.mjs'
 import { concatFiles, dropLeadIn, durationOf, extractEnds, ffmpeg, joinFilm, raiseSound, readPicture, readRaw, readVideoFrames, SPRITE_SIZE, writePng } from './ffmpeg.mjs'
 import { composeDetails, objectShare } from './detail.mjs'
 import { floorTakenByWall, meanDifference, misplacedInPicture, outlineAgreement, roomAgreement } from './metrics.mjs'
-import { DIRECTIONS } from './prompts.mjs'
+import { DIRECTIONS, heldOn } from './prompts.mjs'
 import { providerFor, readerProvider } from './providers.mjs'
 import { matteFromLayers, sortOutAlike, thingOfLayer } from './layers.mjs'
 import { keepFinishedFile, seatFillFile } from './seat.mjs'
@@ -172,6 +172,12 @@ const STEPS = {
         await replaceFile(fresh, `${out}.rejected.png`)
         throw new FatalError(`${attempts > 1 ? `画了 ${attempts} 次都不合格（最后一次：${problem}）` : problem}，已停止，后面的素材都依赖它。被拒的图留在 ${context.node.outputs[0]}.rejected.png。`)
       }
+    }
+    // A picture a video starts from is no bigger than the video.
+    if (params.fit) {
+      const [width, height] = params.fit
+      await ffmpeg(['-loglevel', 'error', '-y', '-i', fresh, '-vf', `scale=${width}:${height}:flags=lanczos`, '-frames:v', '1', `${fresh}.fit.png`])
+      await replaceFile(`${fresh}.fit.png`, fresh)
     }
     if (params.keep) {
       const [width, height] = (params.size ?? '2560x1440').split('x').map(Number)
@@ -363,17 +369,57 @@ const STEPS = {
     context.metric('循环接缝', Object.fromEntries(Object.entries(manifest).map(([direction, entry]) => [direction, entry.loopSeam])))
   },
 
+  // Part of the game's picture, as big as a video starts from. rect is [left, top, width, height], as shares of the picture.
+  async crop(context) {
+    const { rect: [x, y, w, h], size: [width, height] } = context.node.params
+    const out = context.path(context.node.outputs[0])
+    await ensureDirFor(out)
+    await ffmpeg(['-loglevel', 'error', '-y', '-i', context.path(context.node.inputs[0]), '-vf', `crop=iw*${w}:ih*${h}:iw*${x}:ih*${y},scale=${width}:${height}:flags=lanczos`, '-frames:v', '1', `${out}.new.png`])
+    await replaceFile(`${out}.new.png`, out)
+  },
+
+  // A part of one take starts on a picture with faces in it, which the video model may refuse as a real person. Then it is made
+  // the way it was before takes: the room's own pictures and a cut to the face shot. A shot with no such fallback, as an opening,
+  // holds on the picture it ends on instead (prompts.mjs heldOn).
   async clipPart(context, provider) {
-    const { prompt, duration, audio, opensOnCut, references, first, last } = context.node.params
+    const { fallback, ...asked } = context.node.params
     const out = context.path(context.node.outputs[0])
     await ensureDirFor(out)
     const fresh = `${out}.new.mp4`
-    await provider.video({
-      text: prompt, references: references.map(context.path), first: first ? context.path(first) : undefined, last: last ? context.path(last) : undefined,
-      ratio: '16:9', resolution: '720p', duration, audio, out: fresh, hint: { kind: 'clip' },
-      signal: context.signal, external: context.external, setExternal: context.setExternal, onStatus: context.progress,
-    })
-    if (opensOnCut) await dropLeadIn(fresh)
+    const make = async ({ prompt, duration, audio, opensOnCut, references, first, last }, external, setExternal) => {
+      await provider.video({
+        text: prompt, references: references.map(context.path), first: first ? context.path(first) : undefined, last: last ? context.path(last) : undefined,
+        ratio: '16:9', resolution: '720p', duration, audio, out: fresh, hint: { kind: 'clip' },
+        signal: context.signal, external, setExternal, onStatus: context.progress,
+      })
+      if (opensOnCut) await dropLeadIn(fresh)
+    }
+    // A task already under way says which way it was asked, so a restart collects it instead of paying again.
+    const asFallback = value => context.setExternal(value && { ...value, fallback: true })
+    const asHeld = value => context.setExternal(value && { ...value, held: true })
+    // With nothing else to fall back on, a refused first picture is left out: the shot starts on the one it ends on.
+    const canHold = !fallback && asked.first && asked.last && asked.first !== asked.last && !asked.references.length
+    if (fallback && context.external?.fallback) {
+      await make(fallback, context.external, asFallback)
+    } else if (canHold && context.external?.held) {
+      await make(heldOn(asked), context.external, asHeld)
+    } else {
+      try {
+        await make(asked, context.external, context.setExternal)
+        if (fallback) context.metric('拍法', '一镜到底')
+      } catch (error) {
+        if (!error.refusedPicture || !(fallback || canHold)) throw error
+        if (fallback) {
+          context.log(`视频模型不接受推近的画面（${error.message}），这一段改回切镜头的拍法`)
+          context.metric('拍法', '切镜头')
+          await make(fallback, null, asFallback)
+        } else {
+          context.log(`视频模型不接受第一帧（${error.message}），这一段改从尾帧开拍，镜头停在尾帧上`)
+          context.metric('拍法', '停在尾帧')
+          await make(heldOn(asked), null, asHeld)
+        }
+      }
+    }
     await replaceFile(fresh, out)
   },
 
@@ -460,11 +506,12 @@ async function sheetFor(dir, direction) {
   }
 }
 
-export async function executeNode(context) {
+// A provider can be handed in, so a check can stand in for the models.
+export async function executeNode(context, provider = null) {
   const step = STEPS[context.node.kind]
   if (!step) throw new FatalError(`未知步骤：${context.node.kind}`)
   // Read fresh: an earlier step in this run may have changed the project.
   const project = await readProject(context.project.id)
   const reads = ['outline', 'world', 'script', 'plot', 'cast', 'scenes', 'layout'].includes(context.node.kind)
-  return step({ ...context, project }, reads ? readerProvider() : providerFor(project))
+  return step({ ...context, project }, provider ?? (reads ? readerProvider() : providerFor(project)))
 }

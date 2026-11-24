@@ -256,21 +256,45 @@ export function buildGraph(project) {
       outputs: frameOutputs, params: { op: 'frames', shape: people.length ? { ...shape, people } : shape },
     })
     for (const clip of clips) {
-      const faceParts = clip.parts.flatMap((part, index) => part.showsFace ? [index] : [])
+      const faceParts = clip.parts.flatMap((part, index) => (part.fallback ?? part).showsFace ? [index] : [])
       const partFile = index => at(`${clip.id}_part${index}.mp4`)
-      const partIds = clip.parts.map((part, index) => {
+      const first = at(`frame_${clip.id}_first.png`)
+      const last = at(`frame_${clip.id}_last.png`)
+      // A step done as one take is pushed in to a picture of it: cut out of the game's picture, then painted again with the faces.
+      const keyFile = at(`key_${clip.id}.png`)
+      const keyId = clip.key ? nid(`key:${clip.id}`) : null
+      if (clip.key) {
+        const base = at(`key_${clip.id}_base.png`)
+        const baseId = add({ id: nid(`key:${clip.id}:base`), kind: 'crop', resource: 'local', title: `${clip.title} · 推近的取景`, lane: filmLane, sceneId: sid, deps: [framesId], inputs: [at(`frame_${clip.id}_${clip.key.from}.png`)], outputs: [base], params: { rect: clip.key.rect, size: [1280, 720] } })
+        const portraits = clip.key.people.map(person => faceFile(person))
+        add({
+          id: keyId, kind: 'image', resource: 'image', title: `${clip.title} · 推近的画面`, lane: filmLane, sceneId: sid, deps: [baseId, ...clip.key.people.map(person => `cast:${person.id}:face`)],
+          inputs: [base, ...portraits], outputs: [keyFile], params: { prompt: clip.key.prompt, references: [base, ...portraits], size: '2560x1440', fit: [1280, 720], hint: { kind: 'key' } },
+        })
+      }
+      // What a part asks the video model for. A face shot takes only the portrait from the game, so a change to the room or the
+      // walking does not touch it.
+      const asked = part => {
         const faces = (part.people ?? []).map(person => faceFile(person))
-        const first = at(`frame_${clip.id}_first.png`)
-        const last = at(`frame_${clip.id}_last.png`)
         const faceShotPlace = part.facePlate === undefined ? [first] : part.facePlate ? [at(part.facePlate)] : []
+        const picture = end => ({ first, key: keyFile, last }[end] ?? null)
+        if (part.from) return { prompt: part.text, duration: part.duration, audio: true, opensOnCut: false, references: [], first: picture(part.from), last: picture(part.to) }
+        return { prompt: part.text, duration: part.duration, audio: true, opensOnCut: Boolean(part.opensOnCut), references: part.showsFace ? [...faces, ...faceShotPlace] : [], first: part.showsFace ? null : first, last: !part.showsFace && part.landsOnEnd ? last : null }
+      }
+      const filesOf = part => part.from
+        ? [asked(part).first, asked(part).last].filter(Boolean)
+        : part.showsFace ? (part.people ?? []).map(person => faceFile(person)) : [first, ...(part.landsOnEnd ? [last] : [])]
+      const partIds = clip.parts.map((part, index) => {
+        const params = asked(part)
+        const fallback = part.fallback ? asked(part.fallback) : null
+        const shown = part.fallback ?? part
         return add({
-          id: nid(`clip:${clip.id}:${index}`), kind: 'clipPart', resource: 'video', seconds: part.duration, title: `${clip.title} · ${part.showsFace ? '露脸' : `镜头 ${index + 1}`}`, lane: filmLane, sceneId: sid,
+          id: nid(`clip:${clip.id}:${index}`), kind: 'clipPart', resource: 'video', seconds: part.duration, title: `${clip.title} · ${shown.showsFace ? (part.from ? '对话' : '露脸') : `镜头 ${index + 1}`}`, lane: filmLane, sceneId: sid,
           // The shot with the face goes first: if it is going to be refused, nothing else has been paid for.
-          deps: [framesId, ...(part.showsFace ? faces.map(() => null) : faceParts.map(other => nid(`clip:${clip.id}:${other}`)))].filter(Boolean).concat(part.showsFace ? (part.people ?? []).map(person => `cast:${person.id}:face`) : []),
-          // A face shot takes only the portrait from the game, so a change to the room or the walking does not touch it.
-          inputs: part.showsFace ? faces : [first, ...(part.landsOnEnd ? [last] : [])],
+          deps: [framesId, keyId, ...(shown.showsFace ? [] : faceParts.map(other => nid(`clip:${clip.id}:${other}`)))].filter(Boolean).concat(shown.showsFace ? (shown.people ?? []).map(person => `cast:${person.id}:face`) : []),
+          inputs: [...new Set([...filesOf(part), ...(part.fallback ? filesOf(part.fallback) : [])])],
           outputs: [partFile(index)],
-          params: { prompt: part.text, duration: part.duration, audio: true, opensOnCut: Boolean(part.opensOnCut), references: part.showsFace ? [...faces, ...faceShotPlace] : [], first: part.showsFace ? null : first, last: !part.showsFace && part.landsOnEnd ? last : null },
+          params: { ...params, ...(fallback ? { fallback } : {}) },
         })
       })
       const clipFile = at(`${clip.id}.mp4`)

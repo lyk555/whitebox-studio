@@ -464,9 +464,10 @@ function checkScenes(answer) {
 export const beatFromAnswer = beat => {
   const faceCast = Array.isArray(beat.face_cast) ? beat.face_cast.map(clean).filter(Boolean) : []
   const arrives = arrivalsIn(beat.arrives, faceCast)
+  const moves = Array.isArray(beat.moves) ? [...new Set(beat.moves.map(clean).filter(Boolean))] : []
   return {
     objective: clean(beat.objective), objectName: clean(beat.object), prompt: clean(beat.prompt) || '按 E 查看', tooEarly: clean(beat.too_early), during: clean(beat.during), after: clean(beat.after),
-    performed: true, action: clean(beat.action), face: clean(beat.face), faceCast, ...(arrives.length ? { arrives } : {}), settle: clean(beat.settle), sound: clean(beat.sound), ...(spokenLines(beat.lines).length ? { lines: spokenLines(beat.lines) } : {}),
+    performed: true, action: clean(beat.action), face: clean(beat.face), faceCast, ...(arrives.length ? { arrives } : {}), ...(moves.length ? { moves } : {}), settle: clean(beat.settle), sound: clean(beat.sound), ...(spokenLines(beat.lines).length ? { lines: spokenLines(beat.lines) } : {}),
   }
 }
 

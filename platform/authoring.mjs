@@ -12,7 +12,7 @@ import { config, ROOT } from './config.mjs'
 import { FatalError } from './engine.mjs'
 import { linesProblem } from './speech.mjs'
 import { kindOf } from './layers.mjs'
-import { arrivalsIn } from './people.mjs'
+import { arrivalsIn, movesIn } from './people.mjs'
 import { readProject, writeProject } from './store.mjs'
 import { namedProps, propNamesOf, sentence as ended, unended, withoutLines } from './wording.mjs'
 import { anchorsOf, anchorWords, chaptersOf, heldBefore, mapText, outlineText, seenBefore, settleWorld, worldProblems } from './world.mjs'
@@ -713,6 +713,7 @@ ${steps.map((step, index) => `第 ${index + 1} 步，在“${step.place}”：�
       "face": "一个露脸的中近景镜头，写谁在哪、表情和动作。这一步有台词就必须写；没有就留空",
       "face_cast": ["这个露脸镜头里除${player?.name ?? '主角'}外的人物名，和人物表一字不差，最多两个"],
       "arrives": ["face_cast 里这一步才出现的人：原本不在这里，或者躲着、出门了；一开始就在的不写，没有就是空数组"],
+      "moves": ["已经在这个地方的人里，这一步走到这件东西旁边的：凑过来看、押着谁、躲到窗帘后；站在原地不动的不写，没有就是空数组"],
       "settle": "可选：露脸镜头之后，回到原来构图之前的一个不露脸的特写",
       "sound": "action 这个镜头的声音：环境声和这次动作的声音，人说的话不写这里",
       "ambience": "这个地方这时一直有的环境声（风、水、炉火、远处的车），不写一次性的动作声，也不写人声。露脸镜头和收尾特写用它",
@@ -733,7 +734,8 @@ ${steps.map((step, index) => `第 ${index + 1} 步，在“${step.place}”：�
 - 游戏画面里所有人都是站着的，露脸镜头前后都要切回那个画面。face 里的人也写成站着：不写谁坐着、蹲着、躺着、被按住或被带走。
 - action 里一次性的响动（踹门、东西落地、上膛）只写进 sound。ambience 会垫在后面两个镜头下面，写进去就会再响一遍。
 - id 只用在 gives 和 takes 里。action、face、settle 里提到道具时写它的名字。主角手里的道具，这一步用不到就不要写进画面。
-- face_cast 里的人物从这个地方一开始就站在这件东西旁边，玩家走进来就看得到他。他要是这一步才出现的（推门进来、闯进来、躲着的人现身、出门的人回来），写进 arrives，face 里写他出现。
+- face_cast 里的人物从这个地方一开始就站在这件东西旁边，玩家走进来就看得到他。他要是这一步才出现的（推门进来、闯进来、躲着的人现身、出门的人回来），写进 arrives，face 里写他出现。这一步的 objective 要主角去看他、问他、递东西给他的，他在这一步之前就得在：写进前一步的 face_cast 和 arrives，前一步的 face 不写他。
+- 在场的人站在他这一次第一个露脸那一步的东西旁边，不会自己走动。戏要他换个地方（凑到桌边看、躲到窗帘后、押住犯人），在那一步写 moves，镜头里拍他走过去。离开这个地方再回来，谁在、站哪重新算，只算这一次露脸的人。
 - 视频和图片里不能有文字，不要写需要看清字的镜头。
 - props 只列这一段新出现、并且 gives 里用到的道具。`
 }
@@ -781,6 +783,7 @@ export function checkClerkAnswer(answer, { project, steps, held, knownProps }) {
     const named = [...(Array.isArray(raw.face_cast) ? raw.face_cast.map(clean) : []), ...step.lines.map(line => line.who), ...names.filter(name => face.includes(name))]
     const faceCast = face ? [...new Set(named)].filter(name => name !== player && names.includes(name)) : []
     const arrives = arrivalsIn(raw.arrives, faceCast)
+    const moves = movesIn(raw.moves, names, player)
     if (faceCast.length > 2) faults.push(`${label}的露脸镜头里有 ${faceCast.join('、')}，除主角外最多两个人。`)
     const takes = propIdList(raw.takes)
     const gives = propIdList(raw.gives).filter(id => !inHand.has(id) || takes.includes(id))
@@ -794,7 +797,7 @@ export function checkClerkAnswer(answer, { project, steps, held, knownProps }) {
     }
     return {
       objective: clean(raw.objective), objectName: object, prompt: clean(raw.prompt) || '按 E 查看', tooEarly: clean(raw.too_early), during: step.during, after: step.after,
-      performed: true, action, face, faceCast, ...(arrives.length ? { arrives } : {}), settle: face ? shown(raw.settle) : '', sound: unended(raw.sound), ...(face && unended(raw.ambience) ? { ambience: unended(raw.ambience) } : {}), ...(step.lines.length ? { lines: step.lines } : {}), gives, takes,
+      performed: true, action, face, faceCast, ...(arrives.length ? { arrives } : {}), ...(moves.length ? { moves } : {}), settle: face ? shown(raw.settle) : '', sound: unended(raw.sound), ...(face && unended(raw.ambience) ? { ambience: unended(raw.ambience) } : {}), ...(step.lines.length ? { lines: step.lines } : {}), gives, takes,
     }
   })
   if (faults.length) throw new Error(faults.join(' '))

@@ -22,11 +22,15 @@ export const LAST_SHOT = { ...STORY.lastShot, during: STORY.ending }
 export const JOURNEY = STORY.journey ?? null
 export const EXITS = STORY.exits ?? []
 export const SCENE_ID = STORY.sceneId ?? null
-// The others standing in this place: where, and from when. from: once that step here has been reached (due or done), as
+// The others standing in this place: where, and from when to when. from: once that step here has been reached (due or done), as
 // a place come back to later in the story may have someone there only the second time. after: once that step is done, as
-// whoever comes in during it. Neither: from the start. Once there, they stay. Kept the same as platform/people.mjs.
+// whoever comes in during it, or walks over to it. Neither: from the start. until: gone once that step is done, as they walked
+// away during it. before: gone once that step is reached, as the story has been elsewhere since. Kept the same as
+// platform/people.mjs. A person who stands in more than one place over the story is there once for each, told apart by key.
 export const PEOPLE = SCENE.people ?? []
-export const peopleThere = (isReached, isDone) => PEOPLE.filter(person => (!person.from || isReached(person.from)) && (!person.after || isDone(person.after)))
+export const keyOf = person => person.key ?? person.id
+export const peopleThere = (isReached, isDone) => PEOPLE.filter(person => (!person.from || isReached(person.from)) && (!person.after || isDone(person.after))
+  && (!person.until || !isDone(person.until)) && (!person.before || !isReached(person.before)))
 
 // Where the player has got to comes from outside: this page only ever knows one place, and the story goes on elsewhere.
 function storyOnTheMap(started) {

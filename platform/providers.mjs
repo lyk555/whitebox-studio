@@ -170,24 +170,32 @@ async function arkLayers({ image, prompt, dir, signal }) {
 }
 
 const REFUSED = /sensitive|safety|privacy|real.?person|审核|敏感|InputImage|InputText|Invalid/i
+// A picture handed over refused for what is in it, as a real person's face. Said apart, so a shot can be made another way.
+const PICTURE_REFUSED = /InputImageSensitive|PrivacyInformation|real.?person|真人|人脸/i
+export const pictureRefused = error => Object.assign(error, { refusedPicture: true })
 
 async function arkVideo({ text, first, last, references = [], ratio, resolution, duration, audio = false, out, signal, external, setExternal, onStatus = () => {} }) {
   let taskId = external?.taskId
   if (!taskId) {
-    const task = await ark('/contents/generations/tasks', {
-      method: 'POST',
-      signal,
-      body: JSON.stringify({
-        model: config().videoModel,
-        content: [
-          { type: 'text', text },
-          ...await Promise.all(references.map(async path => ({ type: 'image_url', image_url: { url: await asDataUrl(path) }, role: 'reference_image' }))),
-          ...(first ? [{ type: 'image_url', image_url: { url: await asDataUrl(first) }, role: 'first_frame' }] : []),
-          ...(last ? [{ type: 'image_url', image_url: { url: await asDataUrl(last) }, role: 'last_frame' }] : []),
-        ],
-        ratio, resolution, duration, generate_audio: audio, watermark: false,
-      }),
-    })
+    let task
+    try {
+      task = await ark('/contents/generations/tasks', {
+        method: 'POST',
+        signal,
+        body: JSON.stringify({
+          model: config().videoModel,
+          content: [
+            { type: 'text', text },
+            ...await Promise.all(references.map(async path => ({ type: 'image_url', image_url: { url: await asDataUrl(path) }, role: 'reference_image' }))),
+            ...(first ? [{ type: 'image_url', image_url: { url: await asDataUrl(first) }, role: 'first_frame' }] : []),
+            ...(last ? [{ type: 'image_url', image_url: { url: await asDataUrl(last) }, role: 'last_frame' }] : []),
+          ],
+          ratio, resolution, duration, generate_audio: audio, watermark: false,
+        }),
+      })
+    } catch (error) {
+      throw PICTURE_REFUSED.test(error.message) ? pictureRefused(error) : error
+    }
     taskId = task.id
     await setExternal({ taskId })
   } else {
@@ -218,7 +226,8 @@ async function arkVideo({ text, first, last, references = [], ratio, resolution,
       const reason = `${status.error?.code ?? ''} ${status.error?.message ?? '没有返回原因'}`.trim()
       // A dead task will never finish, so whatever happens next must submit a new one.
       await setExternal(null)
-      throw new (REFUSED.test(reason) ? FatalError : TransientError)(`视频任务 ${status.status}：${reason}`)
+      const error = new (REFUSED.test(reason) ? FatalError : TransientError)(`视频任务 ${status.status}：${reason}`)
+      throw PICTURE_REFUSED.test(reason) ? pictureRefused(error) : error
     }
   }
 }

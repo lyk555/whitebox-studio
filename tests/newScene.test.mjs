@@ -187,7 +187,11 @@ test('a shot keeps the light of its picture, and starts from the whole room', ()
   assert.doesNotMatch(clips.find(clip => clip.id === 'opening').parts[0].text, /固定全景/, 'the opening starts close up, on its first thing')
 })
 
-const faceShot = (scene, clip) => buildGraph(projectOf(scene)).find(node => node.id === `scene:s1:clip:${clip}:1`).params
+// A step done as one take keeps the face shot it had before, for when the video model will not start from its picture.
+const faceShot = (scene, clip) => {
+  const { params } = buildGraph(projectOf(scene)).find(node => node.id === `scene:s1:clip:${clip}:1`)
+  return params.fallback ?? params
+}
 
 test('a face shot is never shown a frame with the person already in it', () => {
   const scene = laidOut(sceneOf({ kind: 'indoor', exit: 'door', width: 12 }, ['书架']))
